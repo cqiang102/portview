@@ -170,7 +170,7 @@ type PortViewer struct {
 func main() {
 	a := app.NewWithID("PortView")
 	a.SetIcon(resourceIconPng)
-	w := a.NewWindow("PortView")
+	w := a.NewWindow("端口查看器")
 	w.Resize(fyne.NewSize(1300, 760))
 
 	meta := &PortMetaStore{path: os.ExpandEnv("$HOME/.portview/notes.json")}
