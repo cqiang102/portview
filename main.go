@@ -234,7 +234,6 @@ func main() {
 		if tci.Row == 0 { pv.table.UnselectAll(); return }
 		now := time.Now()
 		if pv.selRow+1 == tci.Row && now.Sub(pv.lastClick) < 350*time.Millisecond {
-			pv.table.UnselectAll()
 			if tci.Col == 7 {
 				pv.editNote()
 			} else {
@@ -244,11 +243,8 @@ func main() {
 		}
 		pv.selRow = tci.Row - 1
 		pv.lastClick = now
-		go func() {
-			time.Sleep(20 * time.Millisecond)
-			pv.table.UnselectAll()
-		}()
-		}
+		pv.status.SetText(fmt.Sprintf("已选中: 端口 %s", fmtPort(pv.filtered[pv.selRow].Port)))
+	}
 
 	// 控件
 	refreshBtn := widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), func() {
