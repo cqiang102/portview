@@ -211,13 +211,8 @@ func main() {
 	// 创建应用，设置唯一 ID 和图标
 	a := app.NewWithID("PortView")
 	a.SetIcon(resourceIconPng)
-
-	// 创建窗口："端口查看器"
-	// 注：Wayland 上 NewWindow("")+显式 SetTitle 优于直接传中文标题，
-	//     避免 GLFW 初始化时序导致 dock 显示"未知"
-	w := a.NewWindow("")
+	w := a.NewWindow("端口查看器")
 	w.Resize(fyne.NewSize(1300, 760))
-	w.SetTitle("端口查看器")
 
 	// 加载持久化数据
 	meta := &PortMetaStore{path: os.ExpandEnv("$HOME/.portview/notes.json")}
