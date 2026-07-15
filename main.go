@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
@@ -556,11 +558,14 @@ func (pv *PortViewer) editNote() {
 	}
 	ne.OnChanged = func(string) { updateCount() }
 
+	spacer := canvas.NewRectangle(color.Transparent)
+	spacer.SetMinSize(fyne.NewSize(1, 48))
 	dialogContent := container.NewVBox(
 		widget.NewForm(
 			widget.NewFormItem("分组", gs),
 		),
-		container.NewPadded(ne),
+		spacer,
+		ne,
 		countLabel,
 	)
 
