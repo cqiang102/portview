@@ -560,14 +560,17 @@ func (pv *PortViewer) editNote() {
 
 	spacer := canvas.NewRectangle(color.Transparent)
 	spacer.SetMinSize(fyne.NewSize(1, 48))
+	wSpacer := canvas.NewRectangle(color.Transparent)
+	wSpacer.SetMinSize(fyne.NewSize(420, 1))
 	dialogContent := container.NewVBox(
+		wSpacer,
 		widget.NewForm(
 			widget.NewFormItem("分组", gs),
 		),
 		spacer,
 		ne,
 		countLabel,
-	)
+		)
 
 	dialog.ShowCustomConfirm(fmt.Sprintf("端口 %d — 备注", e.Port), "保存", "取消",
 		dialogContent,
