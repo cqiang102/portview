@@ -509,6 +509,16 @@ func matchAny(p int, targets ...int) bool {
 
 // ---------- 备注 ----------
 
+const maxNoteLen = 500
+
+func truncateNote(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "..."
+}
+
 func (pv *PortViewer) editNote() {
 	if pv.selRow < 0 || pv.selRow >= len(pv.filtered) {
 		dialog.ShowInformation("提示", "请先选择一行", pv.win); return
@@ -524,14 +534,35 @@ func (pv *PortViewer) editNote() {
 	ne := widget.NewMultiLineEntry()
 	ne.SetText(m.Note)
 	ne.SetPlaceHolder("添加备注...")
+	ne.Wrapping = fyne.TextWrapWord
+
+	countLabel := widget.NewLabel(fmt.Sprintf("%d/%d", len([]rune(m.Note)), maxNoteLen))
+	countLabel.Alignment = fyne.TextAlignTrailing
+	countLabel.TextStyle.Italic = true
+
+	updateCount := func() {
+		n := len([]rune(ne.Text))
+		if n > maxNoteLen {
+			ne.SetText(string([]rune(ne.Text)[:maxNoteLen]))
+			n = maxNoteLen
+		}
+		countLabel.SetText(fmt.Sprintf("%d/%d", n, maxNoteLen))
+	}
+	ne.OnChanged = func(string) { updateCount() }
+
+	noteArea := container.NewBorder(nil, countLabel, nil, nil, ne)
 
 	dialog.ShowForm(fmt.Sprintf("端口 %d", e.Port), "保存", "取消",
-		[]*widget.FormItem{{Text: "分组", Widget: gs}, {Text: "备注", Widget: ne}},
+		[]*widget.FormItem{{Text: "分组", Widget: gs}, {Text: "备注", Widget: noteArea}},
 		func(ok bool) {
 			if !ok { return }
 			g := gs.Selected
 			if g == "(无)" { g = "" }
-			pv.meta.Set(e.Port, PortMeta{Group: g, Note: strings.TrimSpace(ne.Text)})
+			note := strings.TrimSpace(ne.Text)
+			if len([]rune(note)) > maxNoteLen {
+				note = string([]rune(note)[:maxNoteLen])
+			}
+			pv.meta.Set(e.Port, PortMeta{Group: g, Note: note})
 			pv.meta.save()
 			pv.table.Refresh()
 		}, pv.win)
