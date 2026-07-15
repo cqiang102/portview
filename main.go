@@ -130,6 +130,7 @@ type PortEntry struct {
 	PID         int
 	ProcessName string
 	Status      string
+	MemoryMB    float64
 	ExePath     string
 	LocalAddr   string
 }
@@ -161,6 +162,7 @@ type PortViewer struct {
 	win       fyne.Window
 	selRow    int
 	meta      *PortMetaStore
+	lastClick time.Time
 	groupSel  *widget.Select
 	searchBox *widget.Entry
 }
@@ -177,7 +179,7 @@ func main() {
 		entries:  make([]PortEntry, 0),
 		filtered: make([]PortEntry, 0)}
 
-	headers := []string{"端口", "协议", "PID", "进程名", "状态", "分组", "备注"}
+	headers := []string{"端口", "协议", "PID", "进程名", "状态", "内存", "分组", "备注"}
 	pv.table = widget.NewTable(
 		func() (int, int) { return len(pv.filtered) + 1, len(headers) },
 		func() fyne.CanvasObject {
@@ -206,12 +208,14 @@ func main() {
 				if occ { label.SetText(e.ProcessName) } else { label.SetText("-") }
 			case 4: label.SetText(e.Status)
 			case 5:
+				if occ { label.SetText(fmt.Sprintf("%.1f MB", e.MemoryMB)) } else { label.SetText("-") }
+			case 6:
 				g := e.SysGroup()
 				if cg := pv.meta.PortBelongsToCustom(e.Port); len(cg) > 0 {
 					g = strings.Join(cg, ",")
 				}
 				label.SetText(g)
-			case 6:
+			case 7:
 				m := pv.meta.Get(e.Port)
 				if m.Note != "" { label.SetText("📝 " + truncateNote(m.Note, 25)) } else { label.SetText("") }
 			}
@@ -222,12 +226,23 @@ func main() {
 	pv.table.SetColumnWidth(2, 60)
 	pv.table.SetColumnWidth(3, 150)
 	pv.table.SetColumnWidth(4, 65)
-	pv.table.SetColumnWidth(5, 130)
-	pv.table.SetColumnWidth(6, 250)
+	pv.table.SetColumnWidth(5, 80)
+	pv.table.SetColumnWidth(6, 130)
+	pv.table.SetColumnWidth(7, 250)
 
 	pv.table.OnSelected = func(tci widget.TableCellID) {
 		if tci.Row == 0 { pv.table.UnselectAll(); return }
+		now := time.Now()
+		if pv.selRow+1 == tci.Row && now.Sub(pv.lastClick) < 350*time.Millisecond {
+			if tci.Col == 7 {
+				pv.editNote()
+			} else {
+				pv.showDetail()
+			}
+			return
+		}
 		pv.selRow = tci.Row - 1
+		pv.lastClick = now
 	}
 
 	// 控件
@@ -665,7 +680,18 @@ func (pv *PortViewer) showDetail() {
 	msg := fmt.Sprintf("进程: %s (PID %d)\n%s\n%s路径: %s\n命令行: %s",
 		e.ProcessName, pid, info, gpu, e.ExePath, cmdline)
 	if m.Note != "" { msg = "📝 " + m.Note + "\n\n" + msg }
-	dialog.ShowInformation(fmt.Sprintf("端口 %d", e.Port), msg, pv.win)
+	content := container.NewVBox(
+		widget.NewLabel(msg),
+		widget.NewSeparator(),
+		container.NewHBox(
+			layout.NewSpacer(),
+			widget.NewButton("终止进程", func() {
+				exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
+				pv.refresh()
+			}),
+		),
+	)
+	dialog.ShowCustom(fmt.Sprintf("端口 %d", e.Port), "关闭", content, pv.win)
 }
 
 func readProcess(pid int) string {
@@ -768,10 +794,20 @@ func getPorts() ([]PortEntry, error) {
 			if pn == "" { if d, _ := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid)); len(d) > 0 { pn = strings.TrimSpace(string(d)) } }
 			if pn == "" { pn = fmt.Sprintf("PID:%d", pid) }
 		}
+		memMB := 0.0
+		if pid > 0 {
+			if d, err := os.ReadFile(fmt.Sprintf("/proc/%d/statm", pid)); err == nil {
+				f := strings.Fields(string(d))
+				if len(f) >= 2 {
+					rss, _ := strconv.Atoi(f[1])
+					memMB = float64(rss) * 4096 / 1024 / 1024
+				}
+			}
+		}
 		entries = append(entries, PortEntry{
 			Port: port, Protocol: f[0], PID: pid,
 			ProcessName: pn, Status: f[1],
-			ExePath: ep, LocalAddr: addr,
+			MemoryMB: memMB, ExePath: ep, LocalAddr: addr,
 		})
 	}
 	for p := 0; p <= 65535; p++ {
