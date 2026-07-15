@@ -18,4 +18,3 @@ Thumbs.db
 
 # 用户数据（运行时生成，不提交）
 .portview/
-vendor/
