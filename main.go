@@ -210,7 +210,7 @@ func main() {
 				label.SetText(g)
 			case 6:
 				m := pv.meta.Get(e.Port)
-				if m.Note != "" { label.SetText("📝 " + m.Note) } else { label.SetText("") }
+				if m.Note != "" { label.SetText("📝 " + truncateNote(m.Note, 25)) } else { label.SetText("") }
 			}
 		},
 	)
@@ -220,7 +220,7 @@ func main() {
 	pv.table.SetColumnWidth(3, 150)
 	pv.table.SetColumnWidth(4, 65)
 	pv.table.SetColumnWidth(5, 130)
-	pv.table.SetColumnWidth(6, 150)
+	pv.table.SetColumnWidth(6, 250)
 
 	pv.table.OnSelected = func(tci widget.TableCellID) {
 		if tci.Row == 0 { pv.table.UnselectAll(); return }
