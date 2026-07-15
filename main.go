@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -267,8 +268,8 @@ func main() {
 	pv.status.TextStyle.Italic = true
 
 	topBar := container.NewHBox(refreshBtn, detailBtn, killBtn, openBtn, noteBtn, groupBtn,
-		widget.NewSeparator(), pv.groupSel, widget.NewSeparator(),
-		pv.searchBox)
+	widget.NewSeparator(), pv.groupSel, widget.NewSeparator(),
+	layout.NewSpacer(), pv.searchBox)
 	btnRow2 := container.NewHBox(sortPortBtn, sortOccBtn)
 
 	content := container.NewBorder(
@@ -282,6 +283,12 @@ func main() {
 	// 安全初始化
 	initGroupSelect(pv)
 	updateSysInfo(pv.sysInfo)
+
+	// 启动后自动刷新
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		safeDo(pv, pv.refresh)
+	}()
 
 	w.ShowAndRun()
 }
@@ -344,18 +351,18 @@ func (pv *PortViewer) manageGroups() {
 
 		row := container.NewHBox(
 			widget.NewLabel(fmt.Sprintf("🔖 %s (%d)", g.Name, len(g.Ports))),
-			layout.NewSpacer(),
+		layout.NewSpacer(),
 			widget.NewButton("编辑", func() { pv.editGroup(idx) }),
 			widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
 				dialog.ShowConfirm("删除", fmt.Sprintf("删除「%s」？", pv.meta.data.CustomGroups[idx].Name),
-					func(ok bool) {
-						if !ok { return }
+				func(ok bool) {
+					if !ok { return }
 						pv.meta.data.CustomGroups = append(
 							pv.meta.data.CustomGroups[:idx], pv.meta.data.CustomGroups[idx+1:]...)
-						pv.meta.save()
+					pv.meta.save()
 						pv.rebuildGroupList()
 						pv.applyFilter()
-					}, pv.win)
+			}, pv.win)
 			}),
 		)
 		items = append(items, row, widget.NewSeparator())
@@ -365,12 +372,12 @@ func (pv *PortViewer) manageGroups() {
 		widget.NewButtonWithIcon("➕ 新增分组", theme.ContentAddIcon(), func() { pv.addGroup() }),
 		widget.NewButtonWithIcon("🔄 重置为默认", theme.ViewRefreshIcon(), func() {
 			dialog.ShowConfirm("重置", "清除所有自定义分组和备注？", func(ok bool) {
-				if !ok { return }
+			if !ok { return }
 				pv.meta.ResetAll()
 				pv.rebuildGroupList()
 				pv.applyFilter()
 				pv.status.SetText("已重置为默认分组")
-			}, pv.win)
+		}, pv.win)
 		}))
 
 	scroll := container.NewVScroll(container.NewVBox(items...))
@@ -549,10 +556,16 @@ func (pv *PortViewer) editNote() {
 	}
 	ne.OnChanged = func(string) { updateCount() }
 
-	noteArea := container.NewBorder(nil, countLabel, nil, nil, ne)
+	content := container.NewVBox(
+		widget.NewForm(
+			widget.NewFormItem("分组", gs),
+			),
+		ne,
+		countLabel,
+		)
 
-	dialog.ShowForm(fmt.Sprintf("端口 %d", e.Port), "保存", "取消",
-		[]*widget.FormItem{{Text: "分组", Widget: gs}, {Text: "备注", Widget: noteArea}},
+	dialog.ShowCustomConfirm(fmt.Sprintf("端口 %d — 备注", e.Port), "保存", "取消",
+		content,
 		func(ok bool) {
 			if !ok { return }
 			g := gs.Selected
@@ -560,12 +573,12 @@ func (pv *PortViewer) editNote() {
 			note := strings.TrimSpace(strings.ReplaceAll(ne.Text, "\n", " "))
 			if len([]rune(note)) > maxNoteLen {
 				note = string([]rune(note)[:maxNoteLen])
-			}
+				}
 			pv.meta.Set(e.Port, PortMeta{Group: g, Note: note})
 			pv.meta.save()
 			pv.table.Refresh()
 		}, pv.win)
-}
+	}
 
 // ---------- 系统信息 ----------
 
