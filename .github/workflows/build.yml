@@ -9,66 +9,121 @@ on:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    env:
+      GOARCH: amd64
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with: { go-version: "1.23" }
 
-      - run: |
+      - name: Install deps
+        run: |
           sudo apt-get update -qq
-          sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
+          sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev file
 
-      - run: go install fyne.io/tools/cmd/fyne@latest
+      - name: Build
+        run: go build -ldflags="-s -w" -o portview .
+        env: { CGO_ENABLED: 1 }
 
-      - run: fyne package --os linux --release
-        env:
-          CGO_ENABLED: 1
+      - name: Package (.deb + .rpm via nfpm)
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          cat > nfpm.yaml << 'NFPM'
+          name: portview
+          arch: amd64
+          platform: linux
+          version: 1.0.0
+          maintainer: cqiang102
+          description: 端口查看器 - 扫描本地端口占用与进程管理
+          homepage: https://github.com/cqiang102/portview
+          license: MIT
+          contents:
+            - src: portview
+              dst: /usr/bin/portview
+            - src: assets/portview.png
+              dst: /usr/share/icons/hicolor/64x64/apps/portview.png
+            - src: portview.desktop
+              dst: /usr/share/applications/portview.desktop
+          NFPM
+          nfpm package --packager deb --target dist/
+          nfpm package --packager rpm --target dist/
+
+      - name: Package (.AppImage)
+        run: |
+          mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor/64x64/apps AppDir/usr/share/applications
+          cp portview AppDir/usr/bin/
+          cp assets/portview.png AppDir/usr/share/icons/hicolor/64x64/apps/
+          cp assets/portview.png AppDir/portview.png
+          cp portview.desktop AppDir/usr/share/applications/
+          cp portview.desktop AppDir/
+          ln -s usr/bin/portview AppDir/AppRun
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          ./appimagetool-x86_64.AppImage AppDir dist/portview-x86_64.AppImage
 
       - uses: actions/upload-artifact@v4
         with:
-          name: portview-linux
-          path: portview.tar.xz
+          name: portview-linux-x64
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
 
-  windows:
-    runs-on: ubuntu-latest
+  macos:
+    runs-on: macos-14
+    env:
+      GOOS: darwin
+      GOARCH: arm64
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with: { go-version: "1.23" }
 
-      - run: |
+      - name: Build .app bundle
+        run: |
+          go install fyne.io/tools/cmd/fyne@latest
+          fyne package --os darwin --release
+        env: { CGO_ENABLED: 1 }
+
+      - name: Package .dmg
+        run: |
+          hdiutil create -volname PortView \
+            -srcfolder portview.app \
+            -ov -format UDZO \
+            dist/portview-arm64.dmg
+          mkdir -p dist
+          mv portview-arm64.dmg dist/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portview-macos-arm64
+          path: dist/*.dmg
+
+  windows:
+    runs-on: ubuntu-latest
+    env:
+      GOOS: windows
+      GOARCH: amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.23" }
+
+      - name: Install deps
+        run: |
           sudo apt-get update -qq
           sudo apt-get install -y gcc-mingw-w64-x86-64
 
-      - run: go install fyne.io/tools/cmd/fyne@latest
-
-      - run: fyne package --os windows --release
+      - name: Build
+        run: go build -ldflags="-s -w -H windowsgui" -o portview.exe .
         env:
           CGO_ENABLED: 1
           CC: x86_64-w64-mingw32-gcc
 
       - uses: actions/upload-artifact@v4
         with:
-          name: portview-windows
+          name: portview-windows-x64
           path: portview.exe
-
-  macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with: { go-version: "1.23" }
-
-      - run: go install fyne.io/tools/cmd/fyne@latest
-
-      - run: fyne package --os darwin --release
-        env:
-          CGO_ENABLED: 1
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: portview-macos
-          path: portview.app
