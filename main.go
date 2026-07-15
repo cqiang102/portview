@@ -168,7 +168,7 @@ type PortViewer struct {
 }
 
 func main() {
-	a := app.NewWithID("com.portview.app")
+	a := app.NewWithID("PortView")
 	w := a.NewWindow("PortView - 端口查看器")
 	w.Resize(fyne.NewSize(1300, 760))
 
