@@ -509,7 +509,7 @@ func matchAny(p int, targets ...int) bool {
 
 // ---------- 备注 ----------
 
-const maxNoteLen = 500
+const maxNoteLen = 100
 
 func truncateNote(s string, max int) string {
 	r := []rune(s)
@@ -531,10 +531,9 @@ func (pv *PortViewer) editNote() {
 	gs := widget.NewSelect(append([]string{"(无)"}, names...), nil)
 	if m.Group != "" { gs.SetSelected(m.Group) } else { gs.SetSelected("(无)") }
 
-	ne := widget.NewMultiLineEntry()
+	ne := widget.NewEntry()
 	ne.SetText(m.Note)
 	ne.SetPlaceHolder("添加备注...")
-	ne.Wrapping = fyne.TextWrapWord
 
 	countLabel := widget.NewLabel(fmt.Sprintf("%d/%d", len([]rune(m.Note)), maxNoteLen))
 	countLabel.Alignment = fyne.TextAlignTrailing
@@ -558,7 +557,7 @@ func (pv *PortViewer) editNote() {
 			if !ok { return }
 			g := gs.Selected
 			if g == "(无)" { g = "" }
-			note := strings.TrimSpace(ne.Text)
+			note := strings.TrimSpace(strings.ReplaceAll(ne.Text, "\n", " "))
 			if len([]rune(note)) > maxNoteLen {
 				note = string([]rune(note)[:maxNoteLen])
 			}
