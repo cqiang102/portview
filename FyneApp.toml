@@ -1,0 +1,9 @@
+[Details]
+  ID = "PortView"
+  Version = "1.0.0"
+  Build = 1
+  Name = "端口查看器"
+  Icon = "assets/portview.png"
+
+[Release]
+  Category = "System"
