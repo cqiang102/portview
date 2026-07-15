@@ -1,3 +1,6 @@
+// PortView - 端口扫描与进程管理工具
+// Copyright 2026 lacia.cq@qq.com
+// License: Apache 2.0
 package main
 
 import (
@@ -24,7 +27,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// ---------- 数据 ----------
+// Data structures — port metadata, groups, persistence
 
 type PortMeta struct {
 	Group string `json:"group"`
@@ -122,7 +125,7 @@ func (s *PortMetaStore) ResetAll() {
 	s.save()
 }
 
-// ---------- 端口条目 ----------
+// Port entry model
 
 type PortEntry struct {
 	Port        int
@@ -151,7 +154,7 @@ func (e *PortEntry) SysGroup() string {
 	return "动态"
 }
 
-// ---------- 应用 ----------
+// App & GUI
 
 type PortViewer struct {
 	entries   []PortEntry
@@ -249,7 +252,7 @@ func main() {
 		pv.status.SetText(fmt.Sprintf("已选中: 端口 %s", fmtPort(pv.filtered[pv.selRow].Port)))
 	}
 
-	// 控件
+	// Build UI
 	refreshBtn := widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), func() {
 		safeDo(pv, pv.refresh)
 	})
@@ -301,11 +304,11 @@ func main() {
 	)
 	w.SetContent(content)
 
-	// 安全初始化
+	// Init
 	initGroupSelect(pv)
 	updateSysInfo(pv.sysInfo)
 
-	// 启动后自动刷新
+	// Auto-refresh on startup
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		safeDo(pv, pv.refresh)
@@ -323,7 +326,7 @@ func safeDo(pv *PortViewer, fn func()) {
 	fn()
 }
 
-// ---------- 分组管理 ----------
+// Group management logic
 
 func initGroupSelect(pv *PortViewer) {
 	options := buildGroupOptions(pv)
@@ -357,7 +360,7 @@ func (pv *PortViewer) rebuildGroupList() {
 	}
 }
 
-// ---------- 分组管理弹窗 ----------
+// Group management dialogs
 
 func (pv *PortViewer) manageGroups() {
 	items := make([]fyne.CanvasObject, 0)
@@ -477,7 +480,7 @@ func uniquePorts(ports []int) []int {
 	return out
 }
 
-// ---------- 过滤 ----------
+// Filter & search
 
 func (pv *PortViewer) applyFilter() {
 	if pv.table == nil { return }
@@ -535,7 +538,7 @@ func matchAny(p int, targets ...int) bool {
 	return false
 }
 
-// ---------- 备注 ----------
+// Notes editing
 
 const maxNoteLen = 100
 
@@ -610,7 +613,7 @@ func (pv *PortViewer) editNote() {
 	dlg.Show()
 	}
 
-// ---------- 系统信息 ----------
+// System info (CPU, memory, GPU)
 
 func updateSysInfo(label *widget.Label) {
 	go func() {
@@ -658,7 +661,7 @@ func getGPU() string {
 	return fmt.Sprintf("GPU: %s%% | %s/%s MB | %s°C", p[0], p[1], p[2], p[3])
 }
 
-// ---------- 详情 ----------
+// Process detail dialog
 
 func (pv *PortViewer) showDetail() {
 	if pv.selRow < 0 || pv.selRow >= len(pv.filtered) {
@@ -752,7 +755,7 @@ func readCmdline(pid int) string {
 	return strings.ReplaceAll(strings.TrimSpace(string(d)), "\x00", " ")
 }
 
-// ---------- 端口扫描 ----------
+// Port scanning (ss + /proc)
 
 func (pv *PortViewer) refresh() {
 	pv.status.SetText("扫描中...")
@@ -825,7 +828,7 @@ func execCmd(name string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// ---------- 操作 ----------
+// User actions (kill, open, sort, etc.)
 
 func (pv *PortViewer) killSelected() {
 	if pv.selRow < 0 || pv.selRow >= len(pv.filtered) {
