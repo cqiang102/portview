@@ -234,13 +234,13 @@ func main() {
 		if tci.Row == 0 { pv.table.UnselectAll(); return }
 		now := time.Now()
 		if pv.selRow+1 == tci.Row && now.Sub(pv.lastClick) < 350*time.Millisecond {
-		pv.table.UnselectAll()
-		if tci.Col == 7 {
-		pv.editNote()
-		} else {
-		pv.showDetail()
-		}
-		return
+			pv.table.UnselectAll()
+			if tci.Col == 7 {
+			pv.editNote()
+			} else {
+			pv.showDetail()
+			}
+			return
 		}
 		pv.selRow = tci.Row - 1
 		pv.lastClick = now
