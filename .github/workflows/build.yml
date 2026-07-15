@@ -9,57 +9,124 @@ on:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    env:
+      GOARCH: amd64
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with: { go-version: "1.23" }
 
-      - run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
+      - name: Install deps
+        run: sudo apt-get update -qq && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
 
-      - run: go build -ldflags="-s -w" -o portview .
-        env: { CGO_ENABLED: 1, GOARCH: amd64 }
+      - name: Build
+        run: go build -ldflags="-s -w" -o portview .
+        env: { CGO_ENABLED: 1 }
+
+      - name: Package .deb + .rpm
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          mkdir -p dist
+          cat > nfpm.yaml << 'EOF'
+          name: portview
+          arch: amd64
+          platform: linux
+          version: 1.0.0
+          section: utils
+          priority: optional
+          maintainer: lacia.cq@qq.com
+          description: |
+            端口查看器 - 扫描本地端口占用与进程管理工具
+          vendor: cqiang102
+          homepage: https://github.com/cqiang102/portview
+          license: Apache-2.0
+          contents:
+            - src: ./portview
+              dst: /usr/bin/portview
+            - src: ./assets/portview.png
+              dst: /usr/share/icons/hicolor/64x64/apps/portview.png
+            - src: ./portview.desktop
+              dst: /usr/share/applications/portview.desktop
+          EOF
+          nfpm package --packager deb --target dist/
+          nfpm package --packager rpm --target dist/
+
+      - name: Package .AppImage
+        run: |
+          mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor/64x64/apps AppDir/usr/share/applications
+          cp portview AppDir/usr/bin/
+          cp assets/portview.png AppDir/usr/share/icons/hicolor/64x64/apps/
+          cp assets/portview.png AppDir/
+          cp portview.desktop AppDir/usr/share/applications/
+          cp portview.desktop AppDir/
+          ln -sf usr/bin/portview AppDir/AppRun
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          ./appimagetool-x86_64.AppImage AppDir dist/portview-x86_64.AppImage
 
       - uses: actions/upload-artifact@v4
         with:
           name: portview-linux-x64
-          path: portview
+          path: dist/
 
   macos:
     runs-on: macos-14
+    env:
+      GOOS: darwin
+      GOARCH: arm64
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with: { go-version: "1.23" }
 
-      - run: go build -ldflags="-s -w" -o portview .
-        env: { CGO_ENABLED: 1, GOOS: darwin, GOARCH: arm64 }
+      - name: Build
+        run: go build -ldflags="-s -w" -o portview .
+        env: { CGO_ENABLED: 1 }
+
+      - name: Package .dmg
+        run: |
+          mkdir -p dist
+          mkdir -p PortView.app/Contents/MacOS
+          mkdir -p PortView.app/Contents/Resources
+          cp portview PortView.app/Contents/MacOS/
+          cp assets/portview.png PortView.app/Contents/Resources/icon.icns 2>/dev/null || true
+          cat > PortView.app/Contents/Info.plist << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>portview</string>
+            <key>CFBundleIdentifier</key><string>com.github.cqiang102.portview</string>
+            <key>CFBundleName</key><string>PortView</string>
+            <key>CFBundleDisplayName</key><string>端口查看器</string>
+            <key>CFBundleVersion</key><string>1.0.0</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+          </dict>
+          </plist>
+          PLIST
+          hdiutil create -volname PortView -srcfolder PortView.app -ov -format UDZO dist/portview-arm64.dmg
 
       - uses: actions/upload-artifact@v4
         with:
           name: portview-macos-arm64
-          path: portview
+          path: dist/
 
   windows:
     runs-on: ubuntu-latest
+    env:
+      GOOS: windows
+      GOARCH: amd64
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with: { go-version: "1.23" }
 
-      - run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y gcc-mingw-w64-x86-64
+      - run: sudo apt-get update -qq && sudo apt-get install -y gcc-mingw-w64-x86-64
 
       - run: go build -ldflags="-s -w -H windowsgui" -o portview.exe .
         env:
           CGO_ENABLED: 1
-          GOOS: windows
-          GOARCH: amd64
           CC: x86_64-w64-mingw32-gcc
 
       - uses: actions/upload-artifact@v4
