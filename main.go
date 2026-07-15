@@ -166,7 +166,7 @@ type PortViewer struct {
 func main() {
 	a := app.NewWithID("com.portview.app")
 	w := a.NewWindow("PortView - 端口查看器")
-	w.Resize(fyne.NewSize(1100, 740))
+	w.Resize(fyne.NewSize(1300, 760))
 
 	meta := &PortMetaStore{path: os.ExpandEnv("$HOME/.portview/notes.json")}
 	meta.load()
@@ -257,7 +257,7 @@ func main() {
 			sort.Slice(pv.entries, func(i, j int) bool {
 				return pv.entries[i].Port < pv.entries[j].Port
 			})
-	pv.applyFilter()
+			pv.applyFilter()
 		})
 	})
 	sortOccBtn := widget.NewButton("占用↑", func() { safeDo(pv, pv.sortOccupied) })
@@ -267,9 +267,9 @@ func main() {
 	pv.status = widget.NewLabel("就绪 — 点击「刷新」")
 	pv.status.TextStyle.Italic = true
 
-	topBar := container.NewHBox(refreshBtn, detailBtn, killBtn, openBtn, noteBtn, groupBtn,
-	widget.NewSeparator(), pv.groupSel, widget.NewSeparator(),
-	layout.NewSpacer(), pv.searchBox)
+	btnRow := container.NewHBox(refreshBtn, detailBtn, killBtn, openBtn, noteBtn, groupBtn,
+		widget.NewSeparator(), pv.groupSel, widget.NewSeparator())
+	topBar := container.NewBorder(nil, nil, btnRow, nil, pv.searchBox)
 	btnRow2 := container.NewHBox(sortPortBtn, sortOccBtn)
 
 	content := container.NewBorder(
@@ -556,16 +556,16 @@ func (pv *PortViewer) editNote() {
 	}
 	ne.OnChanged = func(string) { updateCount() }
 
-	content := container.NewVBox(
+	dialogContent := container.NewVBox(
 		widget.NewForm(
 			widget.NewFormItem("分组", gs),
-			),
-		ne,
+		),
+		container.NewPadded(ne),
 		countLabel,
-		)
+	)
 
 	dialog.ShowCustomConfirm(fmt.Sprintf("端口 %d — 备注", e.Port), "保存", "取消",
-		content,
+		dialogContent,
 		func(ok bool) {
 			if !ok { return }
 			g := gs.Selected
