@@ -558,34 +558,37 @@ func (pv *PortViewer) editNote() {
 	}
 	ne.OnChanged = func(string) { updateCount() }
 
-	spacer := canvas.NewRectangle(color.Transparent)
-	spacer.SetMinSize(fyne.NewSize(1, 48))
+	var dlg dialog.Dialog
+
 	wSpacer := canvas.NewRectangle(color.Transparent)
 	wSpacer.SetMinSize(fyne.NewSize(420, 1))
-	dialogContent := container.NewVBox(
+	dlgContent := container.NewVBox(
 		wSpacer,
 		widget.NewForm(
 			widget.NewFormItem("分组", gs),
 		),
-		spacer,
 		ne,
 		countLabel,
-		)
-
-	dialog.ShowCustomConfirm(fmt.Sprintf("端口 %d — 备注", e.Port), "保存", "取消",
-		dialogContent,
-		func(ok bool) {
-			if !ok { return }
-			g := gs.Selected
-			if g == "(无)" { g = "" }
-			note := strings.TrimSpace(strings.ReplaceAll(ne.Text, "\n", " "))
-			if len([]rune(note)) > maxNoteLen {
-				note = string([]rune(note)[:maxNoteLen])
+		widget.NewSeparator(),
+		container.NewHBox(
+			layout.NewSpacer(),
+			widget.NewButton("取消", func() { dlg.Hide() }),
+			widget.NewButton("保存", func() {
+				g := gs.Selected
+				if g == "(无)" { g = "" }
+				note := strings.TrimSpace(strings.ReplaceAll(ne.Text, "\n", " "))
+				if len([]rune(note)) > maxNoteLen {
+					note = string([]rune(note)[:maxNoteLen])
 				}
-			pv.meta.Set(e.Port, PortMeta{Group: g, Note: note})
-			pv.meta.save()
-			pv.table.Refresh()
-		}, pv.win)
+				pv.meta.Set(e.Port, PortMeta{Group: g, Note: note})
+				pv.meta.save()
+				pv.table.Refresh()
+				dlg.Hide()
+			}),
+		),
+	)
+	dlg = dialog.NewCustomWithoutButtons(fmt.Sprintf("端口 %d — 备注", e.Port), dlgContent, pv.win)
+	dlg.Show()
 	}
 
 // ---------- 系统信息 ----------
