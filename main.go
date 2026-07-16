@@ -1256,10 +1256,10 @@ func getPortsDarwin() ([]PortEntry, error) {
 			proto = "tcp6"
 		}
 
-		// 读取 exe 路径
+		// 读取 exe 路径（macOS 通过 lsof -d txt 获取）
 		ep := ""
 		if pid > 0 {
-			ep, _ = os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+			ep = getExePathDarwin(pid)
 		}
 
 		// macOS 上用 ps 获取 RSS 内存
@@ -1293,6 +1293,21 @@ func getProcessMemDarwin(pid int) float64 {
 	// ps rss= 返回 KB
 	kb := atoi(strings.TrimSpace(string(out)))
 	return float64(kb) / 1024.0
+}
+
+// getExePathDarwin 通过 lsof -d txt 获取可执行文件完整路径
+func getExePathDarwin(pid int) string {
+	out, err := exec.Command("lsof", "-p", strconv.Itoa(pid), "-a", "-d", "txt", "-Fn").Output()
+	if err != nil {
+		return ""
+	}
+	// 输出格式: p<PID>\nfcwd\nn/path/to/executable\n
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "n") && len(line) > 1 {
+			return line[1:] // 去掉 'n' 前缀
+		}
+	}
+	return ""
 }
 
 // execCmd 执行命令并返回 stdout
