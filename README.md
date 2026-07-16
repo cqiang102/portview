@@ -30,7 +30,13 @@ chmod +x portview-*.AppImage && ./portview-*.AppImage
 
 ### macOS
 
-打开 `.dmg`，拖入 Applications。
+打开 `.dmg`，将 PortView 拖入 `Applications` 文件夹。
+
+> ⚠️ 首次运行提示「无法验证开发者」时，执行：
+> ```bash
+> sudo xattr -rd com.apple.quarantine /Applications/PortView.app
+> ```
+> 然后重新双击打开即可。这是由于应用未经过 Apple 签名公证。
 
 ### Windows
 
@@ -45,7 +51,11 @@ go build -o portview .
 ./portview
 ```
 
-依赖：Go 1.23+、Fyne v2、Linux 需 `libgl1-mesa-dev xorg-dev`。
+依赖：Go 1.23+、Fyne v2。
+
+- Linux 需 `libgl1-mesa-dev xorg-dev` 及 `ss`（iproute2，通常预装）
+- macOS 需 Xcode Command Line Tools（`lsof` 系统自带）
+- Windows 交叉编译需 `mingw-w64`
 
 ## 构建与打包
 

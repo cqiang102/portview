@@ -89,7 +89,21 @@ jobs:
           mkdir -p PortView.app/Contents/MacOS
           mkdir -p PortView.app/Contents/Resources
           cp portview PortView.app/Contents/MacOS/
-          cp assets/portview.png PortView.app/Contents/Resources/icon.icns 2>/dev/null || true
+
+          # 将 PNG 图标转换为 macOS .icns 格式
+          mkdir -p icon.iconset
+          sips -z 16 16   assets/portview.png --out icon.iconset/icon_16x16.png
+          sips -z 32 32   assets/portview.png --out icon.iconset/icon_16x16@2x.png
+          sips -z 32 32   assets/portview.png --out icon.iconset/icon_32x32.png
+          sips -z 64 64   assets/portview.png --out icon.iconset/icon_32x32@2x.png
+          sips -z 128 128 assets/portview.png --out icon.iconset/icon_128x128.png
+          sips -z 256 256 assets/portview.png --out icon.iconset/icon_128x128@2x.png
+          sips -z 256 256 assets/portview.png --out icon.iconset/icon_256x256.png
+          sips -z 512 512 assets/portview.png --out icon.iconset/icon_256x256@2x.png
+          sips -z 512 512 assets/portview.png --out icon.iconset/icon_512x512.png
+          iconutil -c icns icon.iconset -o PortView.app/Contents/Resources/icon.icns
+          rm -rf icon.iconset
+
           cat > PortView.app/Contents/Info.plist << 'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -101,11 +115,18 @@ jobs:
             <key>CFBundleDisplayName</key><string>端口查看器</string>
             <key>CFBundleVersion</key><string>1.0.0</string>
             <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleIconFile</key><string>icon</string>
             <key>LSMinimumSystemVersion</key><string>11.0</string>
           </dict>
           </plist>
           PLIST
-          hdiutil create -volname PortView -srcfolder PortView.app -ov -format UDZO dist/portview-arm64.dmg
+
+          # 创建 DMG 布局目录，包含 Applications 快捷方式（支持拖拽安装）
+          mkdir -p dmg_layout
+          cp -R PortView.app dmg_layout/
+          ln -s /Applications dmg_layout/Applications
+          hdiutil create -volname PortView -srcfolder dmg_layout -ov -format UDZO dist/portview-arm64.dmg
+          rm -rf dmg_layout
 
       - uses: actions/upload-artifact@v4
         with:

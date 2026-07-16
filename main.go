@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -806,8 +807,23 @@ func updateSysInfo(label *widget.Label) {
 	}()
 }
 
-// getCPU 从 /proc/stat 读取 CPU 使用率
+// getCPU 读取 CPU 使用率（Linux: /proc/stat，macOS: 暂返回 N/A）
 func getCPU() string {
+	if runtime.GOOS == "darwin" {
+		// macOS: 用 top 采样获取 CPU 使用率
+		out, err := exec.Command("top", "-l", "1", "-n", "0").Output()
+		if err != nil {
+			return "N/A"
+		}
+		// top -l 1 输出的 CPU usage 行格式: "CPU usage: 12.34% user, 5.67% sys, 82.0% idle"
+		re := regexp.MustCompile(`CPU usage:\s*([\d.]+)%\s*user,\s*([\d.]+)%\s*sys`)
+		if m := re.FindStringSubmatch(string(out)); len(m) == 3 {
+			user := atof(m[1])
+			sys := atof(m[2])
+			return fmt.Sprintf("%.1f%%", user+sys)
+		}
+		return "N/A"
+	}
 	d, _ := os.ReadFile("/proc/stat")
 	for _, line := range strings.Split(string(d), "\n") {
 		if !strings.HasPrefix(line, "cpu ") {
@@ -832,8 +848,11 @@ func getCPU() string {
 	return "N/A"
 }
 
-// getMem 从 /proc/meminfo 读取内存使用率
+// getMem 读取内存使用率（Linux: /proc/meminfo，macOS: vm_stat + sysctl）
 func getMem() string {
+	if runtime.GOOS == "darwin" {
+		return getMemDarwin()
+	}
 	d, _ := os.ReadFile("/proc/meminfo")
 	t, a := 0, 0
 	for _, line := range strings.Split(string(d), "\n") {
@@ -845,6 +864,51 @@ func getMem() string {
 	}
 	u := t - a
 	return fmt.Sprintf("%.1f%% (%d/%d GB)", float64(u)/float64(t)*100, u/1024/1024, t/1024/1024)
+}
+
+// getMemDarwin macOS 版内存信息，通过 sysctl + vm_stat 获取
+func getMemDarwin() string {
+	// 总物理内存（字节）
+	totalOut, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
+	if err != nil {
+		return "N/A"
+	}
+	totalBytes := atof(strings.TrimSpace(string(totalOut)))
+	if totalBytes == 0 {
+		return "N/A"
+	}
+
+	// vm_stat 获取页面使用情况
+	vmOut, err := exec.Command("vm_stat").Output()
+	if err != nil {
+		return "N/A"
+	}
+	// 解析 vm_stat 输出: "Pages free: 12345." / "Pages active: 67890." 等
+	vmText := string(vmOut)
+	getPages := func(key string) float64 {
+		re := regexp.MustCompile(key + `:\s+(\d+)`)
+		if m := re.FindStringSubmatch(vmText); len(m) == 2 {
+			return atof(m[1])
+		}
+		return 0
+	}
+	pageSize := 16384.0 // macOS ARM 默认页大小 16KB
+	// 也可以从 vm_stat 中读取，但 16384 是 Apple Silicon 标准值
+	freePages := getPages("Pages free")
+	activePages := getPages("Pages active")
+	inactivePages := getPages("Pages inactive")
+	wiredPages := getPages("Pages wired down")
+	usedPages := activePages + wiredPages + (inactivePages * 0.5) // 近似已使用
+
+	usedBytes := usedPages * pageSize
+	totalGB := totalBytes / 1024 / 1024 / 1024
+	usedGB := usedBytes / 1024 / 1024 / 1024
+	pct := usedBytes / totalBytes * 100
+
+	// unused: freePages for reference
+	_ = freePages
+
+	return fmt.Sprintf("%.1f%% (%.1f/%.0f GB)", pct, usedGB, totalGB)
 }
 
 // getGPU 通过 nvidia-smi 读取 GPU 信息
@@ -911,8 +975,11 @@ func (pv *PortViewer) showDetail() {
 	dialog.ShowCustom(fmt.Sprintf("端口 %d", e.Port), "关闭", content, pv.win)
 }
 
-// readProcess 从 /proc/[pid]/stat 读取进程状态、CPU、内存
+// readProcess 从 /proc/[pid]/stat 读取进程状态、CPU、内存（macOS 上用 ps）
 func readProcess(pid int) string {
+	if runtime.GOOS == "darwin" {
+		return readProcessDarwin(pid)
+	}
 	d, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
 		return "状态: 已结束或无权限"
@@ -981,8 +1048,44 @@ func readProcessGPU(pid int) string {
 	return ""
 }
 
-// readCmdline 读取 /proc/[pid]/cmdline 并替换 \x00 为空格
+// readProcessDarwin 通过 ps 获取 macOS 进程详情
+func readProcessDarwin(pid int) string {
+	// ps -p PID -o state= -o %cpu= -o rss= -o nice= 获取关键指标
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid),
+		"-o", "state=", "-o", "%cpu=", "-o", "rss=", "-o", "nice=").Output()
+	if err != nil {
+		return "状态: 已结束或无权限"
+	}
+	f := strings.Fields(strings.TrimSpace(string(out)))
+	if len(f) < 4 {
+		return fmt.Sprintf("PID %d (无权限)", pid)
+	}
+	// f[0]=状态, f[1]=CPU%, f[2]=RSS(KB), f[3]=优先级
+	st := f[0]
+	cpuP := atof(f[1])
+	rssKB := atof(f[2])
+	nice := atoi(f[3])
+	rssM := rssKB / 1024.0
+
+	// 状态映射
+	stMap := map[string]string{
+		"R": "运行中", "S": "休眠", "D": "不可中断",
+		"Z": "僵尸", "T": "已停止",
+	}
+	if v, ok := stMap[st]; ok {
+		st = v
+	}
+
+	return fmt.Sprintf("状态: %s | CPU: %.2f%% | 内存: %.1f MB | 优先级: %d | 线程: N/A",
+		st, cpuP, rssM, nice)
+}
+
+// readCmdline 读取进程命令行（Linux: /proc/[pid]/cmdline，macOS: ps）
 func readCmdline(pid int) string {
+	if runtime.GOOS == "darwin" {
+		out, _ := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output()
+		return strings.TrimSpace(string(out))
+	}
 	d, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	return strings.ReplaceAll(strings.TrimSpace(string(d)), "\x00", " ")
 }
@@ -1012,8 +1115,16 @@ func (pv *PortViewer) refresh() {
 	pv.status.SetText(fmt.Sprintf("共 65536 个端口，%d 个被占用", occ))
 }
 
-// getPorts 调用 ss -tulnp 扫描所有监听端口，补全空闲端口
+// getPorts 根据操作系统选择端口扫描方式
 func getPorts() ([]PortEntry, error) {
+	if runtime.GOOS == "darwin" {
+		return getPortsDarwin()
+	}
+	return getPortsLinux()
+}
+
+// getPortsLinux 调用 ss -tulnp 扫描所有监听端口，补全空闲端口
+func getPortsLinux() ([]PortEntry, error) {
 	raw, err := execCmd("ss", "-tulnp")
 	if err != nil {
 		return nil, fmt.Errorf("ss 失败: %w", err)
@@ -1094,6 +1205,96 @@ func getPorts() ([]PortEntry, error) {
 	return entries, nil
 }
 
+// getPortsDarwin macOS 版本：使用 lsof -iTCP -sTCP:LISTEN 扫描监听端口
+func getPortsDarwin() ([]PortEntry, error) {
+	// macOS 上用 lsof 替代 ss，-n -P 避免 DNS 反查和端口名转换
+	raw, err := execCmd("lsof", "-iTCP", "-sTCP:LISTEN", "-n", "-P")
+	// lsof 即使没有监听端口也返回 exit 1（无匹配），所以忽略部分错误
+	if err != nil && raw == "" {
+		return nil, fmt.Errorf("lsof 失败: %w", err)
+	}
+	seen := make(map[int]bool)
+	entries := make([]PortEntry, 0, 100)
+
+	// lsof 输出格式:
+	// COMMAND   PID   USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+	// com.dock  1234  user   10u  IPv4 0x...       0t0  TCP *:8080 (LISTEN)
+	lines := strings.Split(raw, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "COMMAND") {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) < 9 {
+			continue
+		}
+		// f[0]=COMMAND, f[1]=PID, f[8]=NAME
+		pid := atoi(f[1])
+		nameField := f[8] // e.g. "*:8080" or "127.0.0.1:3000"
+
+		// 提取端口号：取最后一个 : 之后的部分
+		idx := strings.LastIndex(nameField, ":")
+		if idx < 0 {
+			continue
+		}
+		port := atoi(nameField[idx+1:])
+		if port == 0 {
+			continue
+		}
+		seen[port] = true
+
+		// 进程名
+		pn := f[0]
+		if pn == "" {
+			pn = fmt.Sprintf("PID:%d", pid)
+		}
+
+		// 协议类型（lsof 第 4 列：IPv4/IPv6，映射为 tcp/tcp6）
+		proto := "tcp"
+		if len(f) >= 5 && f[4] == "IPv6" {
+			proto = "tcp6"
+		}
+
+		// 读取 exe 路径
+		ep := ""
+		if pid > 0 {
+			ep, _ = os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+		}
+
+		// macOS 上用 ps 获取 RSS 内存
+		memMB := 0.0
+		if pid > 0 {
+			memMB = getProcessMemDarwin(pid)
+		}
+
+		entries = append(entries, PortEntry{
+			Port: port, Protocol: proto, PID: pid,
+			ProcessName: pn, Status: "LISTEN",
+			MemoryMB: memMB, ExePath: ep, LocalAddr: nameField,
+		})
+	}
+
+	// 补全空闲端口
+	for p := 0; p <= 65535; p++ {
+		if !seen[p] {
+			entries = append(entries, PortEntry{Port: p, Status: "空闲"})
+		}
+	}
+	return entries, nil
+}
+
+// getProcessMemDarwin 通过 ps 获取进程 RSS 内存（MB）
+func getProcessMemDarwin(pid int) float64 {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "rss=").Output()
+	if err != nil {
+		return 0
+	}
+	// ps rss= 返回 KB
+	kb := atoi(strings.TrimSpace(string(out)))
+	return float64(kb) / 1024.0
+}
+
 // execCmd 执行命令并返回 stdout
 func execCmd(name string, args ...string) (string, error) {
 	out, err := exec.Command(name, args...).Output()
@@ -1139,7 +1340,12 @@ func (pv *PortViewer) openSelected() {
 		dialog.ShowInformation("提示", "无路径", pv.win)
 		return
 	}
-	exec.Command("xdg-open", filepath.Dir(e.ExePath)).Start()
+	// macOS 用 open，Linux 用 xdg-open
+	cmd := "xdg-open"
+	if runtime.GOOS == "darwin" {
+		cmd = "open"
+	}
+	exec.Command(cmd, filepath.Dir(e.ExePath)).Start()
 }
 
 // sortOccupied 按"占用在前、端口号升序"排列
@@ -1158,6 +1364,12 @@ func (pv *PortViewer) sortOccupied() {
 // atoi 字符串转 int，失败返回 0
 func atoi(s string) int {
 	n, _ := strconv.Atoi(s)
+	return n
+}
+
+// atof 字符串转 float64，失败返回 0
+func atof(s string) float64 {
+	n, _ := strconv.ParseFloat(s, 64)
 	return n
 }
 
