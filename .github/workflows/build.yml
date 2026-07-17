@@ -3,8 +3,12 @@ name: Build
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
+
+permissions:
+  contents: write
 
 jobs:
   linux:
@@ -68,6 +72,15 @@ jobs:
         with:
           name: portview-linux-x64
           path: dist/
+
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          gh release view ${{ github.ref_name }} 2>/dev/null || \
+            gh release create ${{ github.ref_name }} --title "${{ github.ref_name }}" --notes "PortView ${{ github.ref_name }}"
+          gh release upload ${{ github.ref_name }} dist/* --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   macos:
     runs-on: macos-14
@@ -133,6 +146,15 @@ jobs:
           name: portview-macos-arm64
           path: dist/
 
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          gh release view ${{ github.ref_name }} 2>/dev/null || \
+            gh release create ${{ github.ref_name }} --title "${{ github.ref_name }}" --notes "PortView ${{ github.ref_name }}"
+          gh release upload ${{ github.ref_name }} dist/* --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   windows:
     runs-on: ubuntu-latest
     env:
@@ -164,3 +186,9 @@ jobs:
         with:
           name: portview-windows-x64
           path: portview.exe
+
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: gh release upload ${{ github.ref_name }} portview.exe --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
