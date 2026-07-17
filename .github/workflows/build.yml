@@ -143,7 +143,17 @@ jobs:
       - uses: actions/setup-go@v5
         with: { go-version: "1.23" }
 
-      - run: sudo apt-get update -qq && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - run: sudo apt-get update -qq && sudo apt-get install -y gcc-mingw-w64-x86-64 imagemagick
+
+      - name: Generate icon resource (.syso)
+        run: |
+          # PNG → ICO
+          convert assets/portview.png -resize 64x64 icon.ico
+          # 编写 .rc 资源文件
+          echo 'IDI_ICON1 ICON "icon.ico"' > portview.rc
+          # 编译为 .syso（Go 自动链接）
+          x86_64-w64-mingw32-windres portview.rc -o rsrc_windows_amd64.syso
+          rm icon.ico portview.rc
 
       - run: go build -ldflags="-s -w -H windowsgui" -o portview.exe .
         env:

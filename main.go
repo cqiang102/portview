@@ -807,23 +807,50 @@ func updateSysInfo(label *widget.Label) {
 	}()
 }
 
-// getCPU 读取 CPU 使用率（Linux: /proc/stat，macOS: 暂返回 N/A）
+// getCPU 读取 CPU 使用率（Linux: /proc/stat，macOS: top，Windows: wmic）
 func getCPU() string {
-	if runtime.GOOS == "darwin" {
-		// macOS: 用 top 采样获取 CPU 使用率
-		out, err := exec.Command("top", "-l", "1", "-n", "0").Output()
-		if err != nil {
-			return "N/A"
-		}
-		// top -l 1 输出的 CPU usage 行格式: "CPU usage: 12.34% user, 5.67% sys, 82.0% idle"
-		re := regexp.MustCompile(`CPU usage:\s*([\d.]+)%\s*user,\s*([\d.]+)%\s*sys`)
-		if m := re.FindStringSubmatch(string(out)); len(m) == 3 {
-			user := atof(m[1])
-			sys := atof(m[2])
-			return fmt.Sprintf("%.1f%%", user+sys)
-		}
+	switch runtime.GOOS {
+	case "darwin":
+		return getCPUDarwin()
+	case "windows":
+		return getCPUWindows()
+	}
+	return getCPULinux()
+}
+
+func getCPUDarwin() string {
+	out, err := exec.Command("top", "-l", "1", "-n", "0").Output()
+	if err != nil {
 		return "N/A"
 	}
+	re := regexp.MustCompile(`CPU usage:\s*([\d.]+)%\s*user,\s*([\d.]+)%\s*sys`)
+	if m := re.FindStringSubmatch(string(out)); len(m) == 3 {
+		user := atof(m[1])
+		sys := atof(m[2])
+		return fmt.Sprintf("%.1f%%", user+sys)
+	}
+	return "N/A"
+}
+
+func getCPUWindows() string {
+	out, err := exec.Command("wmic", "cpu", "get", "loadpercentage", "/format:csv").Output()
+	if err != nil {
+		return "N/A"
+	}
+	// wmic 输出含表头，取最后一行
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		f := strings.Split(lines[i], ",")
+		if len(f) >= 2 {
+			if pct := atof(strings.TrimSpace(f[len(f)-1])); pct > 0 {
+				return fmt.Sprintf("%.0f%%", pct)
+			}
+		}
+	}
+	return "N/A"
+}
+
+func getCPULinux() string {
 	d, _ := os.ReadFile("/proc/stat")
 	for _, line := range strings.Split(string(d), "\n") {
 		if !strings.HasPrefix(line, "cpu ") {
@@ -848,11 +875,18 @@ func getCPU() string {
 	return "N/A"
 }
 
-// getMem 读取内存使用率（Linux: /proc/meminfo，macOS: vm_stat + sysctl）
+// getMem 读取内存使用率（Linux: /proc/meminfo，macOS: vm_stat+sysctl，Windows: wmic）
 func getMem() string {
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		return getMemDarwin()
+	case "windows":
+		return getMemWindows()
 	}
+	return getMemLinux()
+}
+
+func getMemLinux() string {
 	d, _ := os.ReadFile("/proc/meminfo")
 	t, a := 0, 0
 	for _, line := range strings.Split(string(d), "\n") {
@@ -909,6 +943,32 @@ func getMemDarwin() string {
 	_ = freePages
 
 	return fmt.Sprintf("%.1f%% (%.1f/%.0f GB)", pct, usedGB, totalGB)
+}
+
+// getMemWindows Windows 版内存信息，通过 wmic 获取
+func getMemWindows() string {
+	out, err := exec.Command("wmic", "OS", "get",
+		"TotalVisibleMemorySize,FreePhysicalMemory", "/format:csv").Output()
+	if err != nil {
+		return "N/A"
+	}
+	// 输出: \nNode,FreePhysicalMemory,TotalVisibleMemorySize\nNODE,12345678,16777216\n
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, l := range lines {
+		f := strings.Split(l, ",")
+		if len(f) >= 3 {
+			freeKB := atof(strings.TrimSpace(f[1]))
+			totalKB := atof(strings.TrimSpace(f[2]))
+			if totalKB > 0 {
+				usedKB := totalKB - freeKB
+				totalGB := totalKB / 1024 / 1024
+				usedGB := usedKB / 1024 / 1024
+				pct := usedKB / totalKB * 100
+				return fmt.Sprintf("%.1f%% (%.1f/%.0f GB)", pct, usedGB, totalGB)
+			}
+		}
+	}
+	return "N/A"
 }
 
 // getGPU 通过 nvidia-smi 读取 GPU 信息
@@ -975,10 +1035,13 @@ func (pv *PortViewer) showDetail() {
 	dialog.ShowCustom(fmt.Sprintf("端口 %d", e.Port), "关闭", content, pv.win)
 }
 
-// readProcess 从 /proc/[pid]/stat 读取进程状态、CPU、内存（macOS 上用 ps）
+// readProcess 从 /proc/[pid]/stat 读取进程状态、CPU、内存（macOS/Windows 上用对应命令）
 func readProcess(pid int) string {
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		return readProcessDarwin(pid)
+	case "windows":
+		return readProcessWindows(pid)
 	}
 	d, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
@@ -1080,11 +1143,49 @@ func readProcessDarwin(pid int) string {
 		st, cpuP, rssM, nice)
 }
 
-// readCmdline 读取进程命令行（Linux: /proc/[pid]/cmdline，macOS: ps）
+// readProcessWindows 通过 tasklist 获取 Windows 进程详情
+func readProcessWindows(pid int) string {
+	out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid),
+		"/FO", "CSV", "/NH").Output()
+	if err != nil || len(out) == 0 {
+		return "状态: 已结束或无权限"
+	}
+	line := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(line, "\"") || strings.Contains(line, "INFO:") {
+		return "状态: 已结束或无权限"
+	}
+	parts := strings.Split(line, "\",\"")
+	if len(parts) < 5 {
+		return fmt.Sprintf("PID %d (无法读取详情)", pid)
+	}
+	name := strings.Trim(parts[0], "\"")
+	memStr := strings.Trim(parts[len(parts)-1], "\"")
+	memStr = strings.ReplaceAll(memStr, ",", "")
+	memStr = strings.TrimSuffix(memStr, " K")
+	memStr = strings.TrimSpace(memStr)
+	memKB := atof(memStr)
+	memMB := memKB / 1024.0
+
+	return fmt.Sprintf("进程: %s | 内存: %.1f MB | 线程: N/A", name, memMB)
+}
+
+// readCmdline 读取进程命令行（Linux: /proc，macOS: ps，Windows: wmic）
 func readCmdline(pid int) string {
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		out, _ := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output()
 		return strings.TrimSpace(string(out))
+	case "windows":
+		out, _ := exec.Command("wmic", "process", "where",
+			fmt.Sprintf("ProcessId=%d", pid), "get", "CommandLine", "/format:csv").Output()
+		for _, l := range strings.Split(string(out), "\n") {
+			l = strings.TrimSpace(l)
+			idx := strings.LastIndex(l, ",")
+			if idx >= 0 && idx < len(l)-1 {
+				return strings.TrimSpace(l[idx+1:])
+			}
+		}
+		return ""
 	}
 	d, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	return strings.ReplaceAll(strings.TrimSpace(string(d)), "\x00", " ")
@@ -1117,10 +1218,14 @@ func (pv *PortViewer) refresh() {
 
 // getPorts 根据操作系统选择端口扫描方式
 func getPorts() ([]PortEntry, error) {
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		return getPortsDarwin()
+	case "windows":
+		return getPortsWindows()
+	default:
+		return getPortsLinux()
 	}
-	return getPortsLinux()
 }
 
 // getPortsLinux 调用 ss -tulnp 扫描所有监听端口，补全空闲端口
@@ -1301,13 +1406,158 @@ func getExePathDarwin(pid int) string {
 	if err != nil {
 		return ""
 	}
-	// 输出格式: p<PID>\nfcwd\nn/path/to/executable\n
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.HasPrefix(line, "n") && len(line) > 1 {
-			return line[1:] // 去掉 'n' 前缀
+			return line[1:]
 		}
 	}
 	return ""
+}
+
+// ============================================================
+// Windows 端口扫描（netstat -ano）
+// ============================================================
+
+// getPortsWindows Windows 版本：使用 netstat -ano 扫描监听端口
+func getPortsWindows() ([]PortEntry, error) {
+	raw, err := execCmd("netstat", "-ano")
+	if err != nil {
+		return nil, fmt.Errorf("netstat 失败: %w", err)
+	}
+	seen := make(map[int]bool)
+	entries := make([]PortEntry, 0, 100)
+
+	// netstat -ano 输出格式：
+	// Proto  Local Address          Foreign Address        State           PID
+	// TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       1234
+	// UDP    0.0.0.0:5353           *:*                                    9012
+	lines := strings.Split(raw, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "Proto") || strings.HasPrefix(line, "Active") {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		proto := strings.ToLower(f[0])
+		if proto != "tcp" && proto != "udp" {
+			continue
+		}
+
+		// 本地地址：0.0.0.0:8080 或 [::]:22
+		local := f[1]
+		idx := strings.LastIndex(local, ":")
+		if idx < 0 {
+			continue
+		}
+		port := atoi(local[idx+1:])
+		if port == 0 {
+			continue
+		}
+		seen[port] = true
+
+		// PID 在最后一列
+		pid := 0
+		if len(f) >= 5 {
+			pid = atoi(f[len(f)-1])
+		}
+
+		// 进程名
+		pn := ""
+		ep := ""
+		memMB := 0.0
+		if pid > 0 {
+			pn, ep = getProcessInfoWindows(pid)
+			memMB = getProcessMemWindows(pid)
+		}
+		if pn == "" && pid > 0 {
+			pn = fmt.Sprintf("PID:%d", pid)
+		}
+
+		// 状态映射
+		status := "UNKNOWN"
+		if len(f) >= 4 {
+			status = f[3]
+		}
+		if proto == "udp" && status == "UNKNOWN" {
+			status = "LISTEN"
+		}
+
+		entries = append(entries, PortEntry{
+			Port: port, Protocol: proto, PID: pid,
+			ProcessName: pn, Status: status,
+			MemoryMB: memMB, ExePath: ep, LocalAddr: local,
+		})
+	}
+
+	// 补全空闲端口
+	for p := 0; p <= 65535; p++ {
+		if !seen[p] {
+			entries = append(entries, PortEntry{Port: p, Status: "空闲"})
+		}
+	}
+	return entries, nil
+}
+
+// getProcessInfoWindows 通过 tasklist 获取 Windows 进程名和可执行文件路径
+func getProcessInfoWindows(pid int) (name, exePath string) {
+	// tasklist /FI "PID eq 1234" /FO CSV /NH
+	out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid),
+		"/FO", "CSV", "/NH").Output()
+	if err != nil {
+		return "", ""
+	}
+	// 格式: "process.exe","1234","Console","1","123,456 K"
+	line := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(line, "\"") {
+		return "", ""
+	}
+	parts := strings.Split(line, "\",\"")
+	if len(parts) < 2 {
+		return "", ""
+	}
+	name = strings.Trim(parts[0], "\"")
+	// 获取 exe 路径通过 wmic
+	exeOut, err := exec.Command("wmic", "process", "where",
+		fmt.Sprintf("ProcessId=%d", pid), "get", "ExecutablePath", "/format:csv").Output()
+	if err == nil {
+		// 格式: \nNodeName,ExecutablePath\nNODE,C:\path	o\process.exe\n
+		for _, l := range strings.Split(string(exeOut), "\n") {
+			l = strings.TrimSpace(l)
+			if strings.Contains(l, ".exe") || strings.Contains(l, ":\\") {
+				// 取最后一列
+				idx := strings.LastIndex(l, ",")
+				if idx >= 0 {
+					exePath = strings.TrimSpace(l[idx+1:])
+				}
+				break
+			}
+		}
+	}
+	return
+}
+
+// getProcessMemWindows 通过 tasklist 获取 Windows 进程内存（MB）
+func getProcessMemWindows(pid int) float64 {
+	out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid),
+		"/FO", "CSV", "/NH").Output()
+	if err != nil {
+		return 0
+	}
+	line := strings.TrimSpace(string(out))
+	parts := strings.Split(line, "\",\"")
+	if len(parts) < 5 {
+		return 0
+	}
+	// 最后一列是内存，如 "123,456 K"
+	memStr := strings.Trim(parts[len(parts)-1], "\"")
+	memStr = strings.ReplaceAll(memStr, ",", "")
+	memStr = strings.TrimSuffix(memStr, " K")
+	memStr = strings.TrimSpace(memStr)
+	kb := atof(memStr)
+	return kb / 1024.0
 }
 
 // execCmd 执行命令并返回 stdout
@@ -1355,12 +1605,17 @@ func (pv *PortViewer) openSelected() {
 		dialog.ShowInformation("提示", "无路径", pv.win)
 		return
 	}
-	// macOS 用 open，Linux 用 xdg-open
+	// macOS 用 open，Windows 用 explorer，Linux 用 xdg-open
 	cmd := "xdg-open"
-	if runtime.GOOS == "darwin" {
+	arg := filepath.Dir(e.ExePath)
+	switch runtime.GOOS {
+	case "darwin":
 		cmd = "open"
+	case "windows":
+		cmd = "explorer"
+		arg = "/select," + e.ExePath
 	}
-	exec.Command(cmd, filepath.Dir(e.ExePath)).Start()
+	exec.Command(cmd, arg).Start()
 }
 
 // sortOccupied 按"占用在前、端口号升序"排列
