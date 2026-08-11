@@ -28,6 +28,8 @@ sudo rpm -i portview-*.rpm
 chmod +x portview-*.AppImage && ./portview-*.AppImage
 ```
 
+> ⚠️ Linux 下普通用户运行 `ss -tulnp` 无法获取其他用户的进程 PID，占用进程可能显示 `PID:0`。如需完整进程信息，请用 `sudo ./portview` 运行。
+
 ### macOS
 
 打开 `.dmg`，将 PortView 拖入 `Applications` 文件夹。

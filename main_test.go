@@ -421,3 +421,80 @@ func TestSysGroup_Port49152Free(t *testing.T) {
 		t.Errorf("端口 49152 (空闲) 应为 动态，得到 %s", g)
 	}
 }
+
+// ---------- parseLsofDarwin ----------
+
+func TestParseLsofDarwin_TCP(t *testing.T) {
+	raw := `COMMAND  PID USER FD   TYPE DEVICE SIZE/OFF NODE NAME
+python3  123 me  4u  IPv4 0x123 0t0 TCP *:8080 (LISTEN)
+sshd     456 me  5u  IPv6 0x456 0t0 TCP [::]:22 (LISTEN)`
+	seen := make(map[int]bool)
+	entries := make([]PortEntry, 0, 2)
+	parseLsofDarwin(raw, "tcp", seen, &entries)
+
+	if len(entries) != 2 {
+		t.Fatalf("期望 2 条 TCP，得到 %d", len(entries))
+	}
+	e0, e1 := entries[0], entries[1]
+	if e0.Port != 8080 || e0.Protocol != "tcp" || e0.PID != 123 || e0.ProcessName != "python3" || e0.Status != "LISTEN" {
+		t.Errorf("TCP 解析错误: %+v", e0)
+	}
+	if e1.Port != 22 || e1.Protocol != "tcp6" || e1.PID != 456 {
+		t.Errorf("TCP6 解析错误: %+v", e1)
+	}
+	if !seen[8080] || !seen[22] {
+		t.Errorf("seen 未记录: %v", seen)
+	}
+}
+
+func TestParseLsofDarwin_UDP(t *testing.T) {
+	raw := `COMMAND  PID USER FD   TYPE DEVICE SIZE/OFF NODE NAME
+mDNSResponder 789 me 14u IPv4 0x789 0t0 UDP *:5353
+racoon       1000 me  3u IPv6 0xabc 0t0 UDP [::]:500`
+	seen := make(map[int]bool)
+	entries := make([]PortEntry, 0, 2)
+	parseLsofDarwin(raw, "udp", seen, &entries)
+
+	if len(entries) != 2 {
+		t.Fatalf("期望 2 条 UDP，得到 %d", len(entries))
+	}
+	e0, e1 := entries[0], entries[1]
+	if e0.Port != 5353 || e0.Protocol != "udp" || e0.PID != 789 || e0.Status != "UNCONN" {
+		t.Errorf("UDP 解析错误: %+v", e0)
+	}
+	if e1.Port != 500 || e1.Protocol != "udp6" {
+		t.Errorf("UDP6 解析错误: %+v", e1)
+	}
+}
+
+func TestParseLsofDarwin_Empty(t *testing.T) {
+	seen := make(map[int]bool)
+	entries := make([]PortEntry, 0)
+	parseLsofDarwin("", "tcp", seen, &entries)
+	if len(entries) != 0 {
+		t.Errorf("空输出应无条目，得到 %d", len(entries))
+	}
+}
+
+// ---------- PortMetaStore.save ----------
+
+func TestMetaStore_SaveAtomic(t *testing.T) {
+	path := "/tmp/test_portview_save.json"
+	os.Remove(path)
+	defer os.Remove(path)
+	defer os.Remove(path + ".tmp")
+
+	store := &PortMetaStore{path: path}
+	store.load()
+	store.Set(1234, PortMeta{Note: "svc", Group: "g"})
+	if err := store.save(); err != nil {
+		t.Fatalf("save 失败: %v", err)
+	}
+
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("配置文件未生成: %v", err)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("临时文件应已清理: %v", err)
+	}
+}

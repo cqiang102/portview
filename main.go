@@ -79,7 +79,7 @@ func (s *PortMetaStore) load() {
 		// 首次使用，创建默认分组
 		s.data.CustomGroups = defaultGroups()
 		s.data.PortNotes = make(map[int]PortMeta)
-		s.save()
+		_ = s.save()
 		return
 	}
 	// 尝试新格式（含 CustomGroups）
@@ -96,11 +96,24 @@ func (s *PortMetaStore) load() {
 	}
 }
 
-// save 将数据写回磁盘（JSON 格式）
-func (s *PortMetaStore) save() {
-	os.MkdirAll(filepath.Dir(s.path), 0755)
-	d, _ := json.MarshalIndent(s.data, "", "  ")
-	os.WriteFile(s.path, d, 0644)
+// save 将数据写回磁盘（先写临时文件再原子替换，避免写一半损坏配置）
+func (s *PortMetaStore) save() error {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
+		return fmt.Errorf("创建配置目录失败: %w", err)
+	}
+	d, err := json.MarshalIndent(s.data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化配置失败: %w", err)
+	}
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, d, 0644); err != nil {
+		return fmt.Errorf("写入临时配置失败: %w", err)
+	}
+	if err := os.Rename(tmp, s.path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("保存配置失败: %w", err)
+	}
+	return nil
 }
 
 // Get 读取某个端口的备注
@@ -134,14 +147,14 @@ func (s *PortMetaStore) PortBelongsToCustom(port int) []string {
 }
 
 // ResetAll 清除所有自定义分组和备注，恢复默认
-func (s *PortMetaStore) ResetAll() {
+func (s *PortMetaStore) ResetAll() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.data = StoreData{
 		CustomGroups: defaultGroups(),
 		PortNotes:    make(map[int]PortMeta),
 	}
-	s.save()
+	return s.save()
 }
 
 // ============================================================
@@ -478,7 +491,10 @@ func (pv *PortViewer) manageGroups() {
 						}
 						pv.meta.data.CustomGroups = append(
 							pv.meta.data.CustomGroups[:idx], pv.meta.data.CustomGroups[idx+1:]...)
-						pv.meta.save()
+						if err := pv.meta.save(); err != nil {
+							dialog.ShowError(fmt.Errorf("删除分组失败: %w", err), pv.win)
+							return
+						}
 						pv.rebuildGroupList()
 						pv.applyFilter()
 					}, pv.win)
@@ -495,7 +511,10 @@ func (pv *PortViewer) manageGroups() {
 				if !ok {
 					return
 				}
-				pv.meta.ResetAll()
+				if err := pv.meta.ResetAll(); err != nil {
+					dialog.ShowError(fmt.Errorf("重置失败: %w", err), pv.win)
+					return
+				}
 				pv.rebuildGroupList()
 				pv.applyFilter()
 				pv.status.SetText("已重置为默认分组")
@@ -525,7 +544,10 @@ func (pv *PortViewer) addGroup() {
 				return
 			}
 			pv.meta.data.CustomGroups = append(pv.meta.data.CustomGroups, CustomGroup{Name: name, Ports: ports})
-			pv.meta.save()
+			if err := pv.meta.save(); err != nil {
+				dialog.ShowError(fmt.Errorf("新增分组失败: %w", err), pv.win)
+				return
+			}
 			pv.rebuildGroupList()
 			pv.applyFilter()
 		}, pv.win)
@@ -556,7 +578,10 @@ func (pv *PortViewer) editGroup(idx int) {
 			}
 			sort.Ints(ports)
 			pv.meta.data.CustomGroups[idx] = CustomGroup{Name: name, Ports: uniquePorts(ports)}
-			pv.meta.save()
+			if err := pv.meta.save(); err != nil {
+				dialog.ShowError(fmt.Errorf("保存分组失败: %w", err), pv.win)
+				return
+			}
 			pv.rebuildGroupList()
 			pv.applyFilter()
 		}, pv.win)
@@ -779,7 +804,10 @@ func (pv *PortViewer) editNote() {
 					note = string([]rune(note)[:maxNoteLen])
 				}
 				pv.meta.Set(e.Port, PortMeta{Group: g, Note: note})
-				pv.meta.save()
+				if err := pv.meta.save(); err != nil {
+					dialog.ShowError(fmt.Errorf("保存备注失败: %w", err), pv.win)
+					return
+				}
 				pv.table.Refresh()
 				dlg.Hide()
 			}),
@@ -1027,7 +1055,10 @@ func (pv *PortViewer) showDetail() {
 		container.NewHBox(
 			layout.NewSpacer(),
 			widget.NewButton("终止进程", func() {
-				exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
+				if err := killProcess(pid); err != nil {
+					dialog.ShowError(fmt.Errorf("失败: %w", err), pv.win)
+					return
+				}
 				pv.refresh()
 			}),
 		),
@@ -1213,7 +1244,11 @@ func (pv *PortViewer) refresh() {
 			occ++
 		}
 	}
-	pv.status.SetText(fmt.Sprintf("共 65536 个端口，%d 个被占用", occ))
+	msg := fmt.Sprintf("共 65536 个端口，%d 个被占用", occ)
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		msg += " ⚠️ 非 root 运行，可能看不到部分进程信息，建议用 sudo 运行"
+	}
+	pv.status.SetText(msg)
 }
 
 // getPorts 根据操作系统选择端口扫描方式
@@ -1313,14 +1348,31 @@ func getPortsLinux() ([]PortEntry, error) {
 // getPortsDarwin macOS 版本：使用 lsof -iTCP -sTCP:LISTEN 扫描监听端口
 func getPortsDarwin() ([]PortEntry, error) {
 	// macOS 上用 lsof 替代 ss，-n -P 避免 DNS 反查和端口名转换
-	raw, err := execCmd("lsof", "-iTCP", "-sTCP:LISTEN", "-n", "-P")
-	// lsof 即使没有监听端口也返回 exit 1（无匹配），所以忽略部分错误
-	if err != nil && raw == "" {
-		return nil, fmt.Errorf("lsof 失败: %w", err)
+	// TCP 只取 LISTEN 状态；UDP 无状态过滤，直接列出全部 UDP socket
+	rawTCP, errTCP := execCmd("lsof", "-iTCP", "-sTCP:LISTEN", "-n", "-P")
+	rawUDP, errUDP := execCmd("lsof", "-iUDP", "-n", "-P")
+	// lsof 没有匹配项时返回 exit 1，所以仅在两个命令都无输出时视为失败
+	if (errTCP != nil && rawTCP == "") && (errUDP != nil && rawUDP == "") {
+		return nil, fmt.Errorf("lsof 失败: %w", errTCP)
 	}
+
 	seen := make(map[int]bool)
 	entries := make([]PortEntry, 0, 100)
+	parseLsofDarwin(rawTCP, "tcp", seen, &entries)
+	parseLsofDarwin(rawUDP, "udp", seen, &entries)
 
+	// 补全空闲端口
+	for p := 0; p <= 65535; p++ {
+		if !seen[p] {
+			entries = append(entries, PortEntry{Port: p, Status: "空闲"})
+		}
+	}
+	return entries, nil
+}
+
+// parseLsofDarwin 解析 macOS lsof 输出并追加到 entries
+// baseProto 为 "tcp"/"udp"，IPv6 自动映射为 tcp6/udp6
+func parseLsofDarwin(raw, baseProto string, seen map[int]bool, entries *[]PortEntry) {
 	// lsof 输出格式:
 	// COMMAND   PID   USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
 	// com.dock  1234  user   10u  IPv4 0x...       0t0  TCP *:8080 (LISTEN)
@@ -1336,7 +1388,7 @@ func getPortsDarwin() ([]PortEntry, error) {
 		}
 		// f[0]=COMMAND, f[1]=PID, f[8]=NAME
 		pid := atoi(f[1])
-		nameField := f[8] // e.g. "*:8080" or "127.0.0.1:3000"
+		nameField := f[8] // e.g. "*:8080" 或 "127.0.0.1:3000"
 
 		// 提取端口号：取最后一个 : 之后的部分
 		idx := strings.LastIndex(nameField, ":")
@@ -1355,10 +1407,16 @@ func getPortsDarwin() ([]PortEntry, error) {
 			pn = fmt.Sprintf("PID:%d", pid)
 		}
 
-		// 协议类型（lsof 第 4 列：IPv4/IPv6，映射为 tcp/tcp6）
-		proto := "tcp"
+		// 协议类型（lsof 第 4 列：IPv4/IPv6，映射为 tcp/tcp6 或 udp/udp6）
+		proto := baseProto
 		if len(f) >= 5 && f[4] == "IPv6" {
-			proto = "tcp6"
+			proto = baseProto + "6"
+		}
+
+		// 状态：TCP 为 LISTEN，UDP 为 UNCONN（与 Linux ss 输出保持一致）
+		status := "LISTEN"
+		if baseProto == "udp" {
+			status = "UNCONN"
 		}
 
 		// 读取 exe 路径（macOS 通过 lsof -d txt 获取）
@@ -1373,20 +1431,12 @@ func getPortsDarwin() ([]PortEntry, error) {
 			memMB = getProcessMemDarwin(pid)
 		}
 
-		entries = append(entries, PortEntry{
+		*entries = append(*entries, PortEntry{
 			Port: port, Protocol: proto, PID: pid,
-			ProcessName: pn, Status: "LISTEN",
+			ProcessName: pn, Status: status,
 			MemoryMB: memMB, ExePath: ep, LocalAddr: nameField,
 		})
 	}
-
-	// 补全空闲端口
-	for p := 0; p <= 65535; p++ {
-		if !seen[p] {
-			entries = append(entries, PortEntry{Port: p, Status: "空闲"})
-		}
-	}
-	return entries, nil
 }
 
 // getProcessMemDarwin 通过 ps 获取进程 RSS 内存（MB）
@@ -1566,6 +1616,14 @@ func execCmd(name string, args ...string) (string, error) {
 	return string(out), err
 }
 
+// killProcess 终止指定进程：Windows 用 taskkill，Linux/macOS 用 kill -9
+func killProcess(pid int) error {
+	if runtime.GOOS == "windows" {
+		return exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid)).Run()
+	}
+	return exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
+}
+
 // ============================================================
 // 用户操作（终止进程、打开位置、排序）
 // ============================================================
@@ -1587,7 +1645,7 @@ func (pv *PortViewer) killSelected() {
 			if !ok {
 				return
 			}
-			if err := exec.Command("kill", "-9", strconv.Itoa(e.PID)).Run(); err != nil {
+			if err := killProcess(e.PID); err != nil {
 				dialog.ShowError(fmt.Errorf("失败: %w", err), pv.win)
 				return
 			}
