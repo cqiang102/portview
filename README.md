@@ -53,7 +53,7 @@ go build -o portview .
 ./portview
 ```
 
-依赖：Go 1.23+、Fyne v2。
+依赖：Go 1.26+、Fyne v2。
 
 - Linux 需 `libgl1-mesa-dev xorg-dev` 及 `ss`（iproute2，通常预装）
 - macOS 需 Xcode Command Line Tools（`lsof` 系统自带）

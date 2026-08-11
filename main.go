@@ -4,18 +4,15 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"image/color"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -28,185 +25,13 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// ============================================================
-// 数据结构 — 端口元信息、自定义分组、持久化
-// ============================================================
-
-// PortMeta 端口的备注和所属自定义分组
-type PortMeta struct {
-	Group string `json:"group"` // 所属自定义分组名
-	Note  string `json:"note"`  // 备注文本，最长 100 字符
-}
-
-// CustomGroup 用户自定义端口分组
-type CustomGroup struct {
-	Name  string `json:"name"`  // 分组名称
-	Ports []int  `json:"ports"` // 包含的端口列表
-}
-
-// StoreData 持久化到磁盘的完整数据结构
-type StoreData struct {
-	CustomGroups []CustomGroup    `json:"custom_groups"` // 自定义分组列表
-	PortNotes    map[int]PortMeta `json:"port_notes"`    // 端口→备注映射
-}
-
-// defaultGroups 返回内置的默认分组（Web、数据库、SSH 等）
-func defaultGroups() []CustomGroup {
-	return []CustomGroup{
-		{Name: "🌐 Web服务", Ports: []int{80, 443, 8080, 8443, 3000, 5000, 8000, 8888, 9090}},
-		{Name: "💾 数据库", Ports: []int{3306, 5432, 6379, 27017, 1433, 1521, 9042}},
-		{Name: "🔐 远程访问", Ports: []int{22, 3389, 5900, 5901, 6000, 6001}},
-		{Name: "📧 邮件服务", Ports: []int{25, 110, 143, 587, 993, 995}},
-		{Name: "🛠️ 开发工具", Ports: []int{5173, 5174, 24678, 9229, 30000}},
-		{Name: "📡 网络服务", Ports: []int{53, 67, 68, 69, 123, 389, 636}},
-	}
-}
-
-// PortMetaStore 线程安全的分组和备注存储，序列化为 JSON
-type PortMetaStore struct {
-	mu   sync.RWMutex // 读写锁
-	data StoreData    // 内存数据
-	path string       // JSON 文件路径
-}
-
-// load 从磁盘加载数据，首次使用时自动创建默认分组
-func (s *PortMetaStore) load() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.data = StoreData{}
-	d, err := os.ReadFile(s.path)
-	if err != nil {
-		// 首次使用，创建默认分组
-		s.data.CustomGroups = defaultGroups()
-		s.data.PortNotes = make(map[int]PortMeta)
-		_ = s.save()
-		return
-	}
-	// 尝试新格式（含 CustomGroups）
-	if err := json.Unmarshal(d, &s.data); err != nil {
-		// 旧格式兼容：仅有 port→PortMeta 的 map
-		old := make(map[int]PortMeta)
-		if err2 := json.Unmarshal(d, &old); err2 == nil {
-			s.data.PortNotes = old
-		}
-		s.data.CustomGroups = defaultGroups()
-	}
-	if s.data.PortNotes == nil {
-		s.data.PortNotes = make(map[int]PortMeta)
-	}
-}
-
-// save 将数据写回磁盘（先写临时文件再原子替换，避免写一半损坏配置）
-func (s *PortMetaStore) save() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
-		return fmt.Errorf("创建配置目录失败: %w", err)
-	}
-	d, err := json.MarshalIndent(s.data, "", "  ")
-	if err != nil {
-		return fmt.Errorf("序列化配置失败: %w", err)
-	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, d, 0644); err != nil {
-		return fmt.Errorf("写入临时配置失败: %w", err)
-	}
-	if err := os.Rename(tmp, s.path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("保存配置失败: %w", err)
-	}
-	return nil
-}
-
-// Get 读取某个端口的备注
-func (s *PortMetaStore) Get(port int) PortMeta {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.data.PortNotes[port]
-}
-
-// Set 写入某个端口的备注
-func (s *PortMetaStore) Set(port int, m PortMeta) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.data.PortNotes[port] = m
-}
-
-// PortBelongsToCustom 返回某端口所属的所有自定义分组名
-func (s *PortMetaStore) PortBelongsToCustom(port int) []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var out []string
-	for _, g := range s.data.CustomGroups {
-		for _, p := range g.Ports {
-			if p == port {
-				out = append(out, g.Name)
-				break
-			}
-		}
-	}
-	return out
-}
-
-// ResetAll 清除所有自定义分组和备注，恢复默认
-func (s *PortMetaStore) ResetAll() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.data = StoreData{
-		CustomGroups: defaultGroups(),
-		PortNotes:    make(map[int]PortMeta),
-	}
-	return s.save()
-}
-
-// ============================================================
-// 端口条目模型
-// ============================================================
-
-// PortEntry 单个端口的信息
-type PortEntry struct {
-	Port        int     // 端口号 0-65535
-	Protocol    string  // 协议：tcp/tcp6/udp/udp6
-	PID         int     // 占用进程 PID，0 表示空闲
-	ProcessName string  // 进程名
-	Status      string  // 连接状态：LISTEN/ESTABLISHED/空闲
-	MemoryMB    float64 // 进程 RSS 内存（MB）
-	ExePath     string  // 可执行文件路径
-	LocalAddr   string  // 本地地址（含 IP）
-}
-
-// SysGroup 根据端口号和状态自动判断系统分组
-func (e *PortEntry) SysGroup() string {
-	// 被占用端口按端口号分类
-	if e.PID > 0 {
-		switch {
-		case e.Port == 22:
-			return "SSH"
-		case e.Port == 80 || e.Port == 443 || e.Port == 8080 || e.Port == 8443:
-			return "Web"
-		case e.Port == 3306 || e.Port == 5432 || e.Port == 6379 || e.Port == 27017:
-			return "数据库"
-		case e.Port == 53:
-			return "DNS"
-		case e.Port <= 1023:
-			return "系统"
-		default:
-			return "应用"
-		}
-	}
-	// 空闲端口按范围分类：系统(0-1023) / 注册(1024-49151) / 动态(49152+)
-	if e.Port <= 1023 {
-		return "系统"
-	}
-	if e.Port <= 49151 {
-		return "注册"
-	}
-	return "动态"
-}
+// doubleClickInterval 双击判定间隔
+const doubleClickInterval = 350 * time.Millisecond
 
 // ============================================================
 // 应用主结构和 GUI
 // ============================================================
 
-// PortViewer 应用核心结构，持有所有状态和 UI 引用
 type PortViewer struct {
 	entries   []PortEntry     // 完整扫描结果（65536 条）
 	filtered  []PortEntry     // 过滤/排序后的展示数据
@@ -321,9 +146,17 @@ func main() {
 			pv.table.UnselectAll()
 			return // 忽略表头点击
 		}
+		row := tci.Row - 1
+		if row < 0 || row >= len(pv.filtered) {
+			pv.table.UnselectAll()
+			return
+		}
 		now := time.Now()
-		// 双击检测：同一行、间隔 < 350ms
-		if pv.selRow+1 == tci.Row && now.Sub(pv.lastClick) < 350*time.Millisecond {
+		// 双击检测：同一行、间隔 < doubleClickInterval
+		// 说明：Fyne 的 Table.Select 对已选中的单元格不会再次触发 OnSelected，
+		// 因此单击后必须立即取消选中，下一次点击同一行才能重新触发回调做双击检测。
+		if pv.selRow == row && now.Sub(pv.lastClick) < doubleClickInterval {
+			pv.selRow = -1
 			pv.table.UnselectAll()
 			if tci.Col == 7 {
 				pv.editNote() // 双击备注列 → 编辑备注
@@ -332,11 +165,11 @@ func main() {
 			}
 			return
 		}
-		// 单击：立即取消选中（让下次点击可触发双击检测），更新选中状态
-		pv.selRow = tci.Row - 1
+		// 单击：记录选中并立即取消选中（让下次点击可触发双击检测），状态栏提示
+		pv.selRow = row
 		pv.lastClick = now
 		pv.table.UnselectAll()
-		pv.status.SetText(fmt.Sprintf("已选中: 端口 %s", fmtPort(pv.filtered[pv.selRow].Port)))
+		pv.status.SetText(fmt.Sprintf("已选中: 端口 %s", fmtPort(pv.filtered[row].Port)))
 	}
 
 	// ---- 顶部按钮栏 ----
@@ -408,7 +241,6 @@ func main() {
 	w.ShowAndRun()
 }
 
-// safeDo 统一 panic 恢复，避免单次操作崩溃导致程序退出
 func safeDo(pv *PortViewer, fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -418,11 +250,6 @@ func safeDo(pv *PortViewer, fn func()) {
 	fn()
 }
 
-// ============================================================
-// 分组管理逻辑
-// ============================================================
-
-// initGroupSelect 初始化分组下拉列表并绑定筛选事件
 func initGroupSelect(pv *PortViewer) {
 	options := buildGroupOptions(pv)
 	pv.groupSel.Options = options
@@ -433,7 +260,6 @@ func initGroupSelect(pv *PortViewer) {
 	pv.searchBox.OnChanged = func(string) { pv.applyFilter() }
 }
 
-// buildGroupOptions 构建分组下拉的所有选项
 func buildGroupOptions(pv *PortViewer) []string {
 	out := []string{"🏷️ 全部", "📌 已占用", "🅰 TCP", "🅱 UDP",
 		"⚙️ 系统(占用)", "🌐 Web", "💾 数据库", "🔐 SSH", "🔁 动态"}
@@ -443,7 +269,6 @@ func buildGroupOptions(pv *PortViewer) []string {
 	return out
 }
 
-// rebuildGroupList 分组变更后重建下拉列表
 func (pv *PortViewer) rebuildGroupList() {
 	options := buildGroupOptions(pv)
 	pv.groupSel.Options = options
@@ -460,11 +285,6 @@ func (pv *PortViewer) rebuildGroupList() {
 	}
 }
 
-// ============================================================
-// 分组管理弹窗
-// ============================================================
-
-// manageGroups 打开分组管理弹窗，显示所有自定义分组
 func (pv *PortViewer) manageGroups() {
 	items := make([]fyne.CanvasObject, 0)
 	items = append(items,
@@ -526,7 +346,6 @@ func (pv *PortViewer) manageGroups() {
 	dialog.ShowCustom("分组管理", "关闭", scroll, pv.win)
 }
 
-// addGroup 弹出新增分组表单
 func (pv *PortViewer) addGroup() {
 	nameEntry := widget.NewEntry()
 	nameEntry.SetPlaceHolder("分组名 (如: 我的服务)")
@@ -553,7 +372,6 @@ func (pv *PortViewer) addGroup() {
 		}, pv.win)
 }
 
-// editGroup 弹出编辑分组表单
 func (pv *PortViewer) editGroup(idx int) {
 	g := pv.meta.data.CustomGroups[idx]
 	nameEntry := widget.NewEntry()
@@ -587,49 +405,6 @@ func (pv *PortViewer) editGroup(idx int) {
 		}, pv.win)
 }
 
-// parsePorts 解析端口字符串，支持逗号分隔和范围 (如 "3000,5000,8000-8010")
-func parsePorts(s string) []int {
-	var out []int
-	for _, part := range strings.Split(s, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		// 范围：8000-8010
-		if strings.Contains(part, "-") {
-			r := strings.SplitN(part, "-", 2)
-			s, e := atoi(strings.TrimSpace(r[0])), atoi(strings.TrimSpace(r[1]))
-			if s > 0 && e > 0 && s <= e && e <= 65535 {
-				for p := s; p <= e; p++ {
-					out = append(out, p)
-				}
-			}
-		} else if p := atoi(part); p > 0 && p <= 65535 {
-			out = append(out, p)
-		}
-	}
-	return uniquePorts(out)
-}
-
-// uniquePorts 去重并排序端口列表
-func uniquePorts(ports []int) []int {
-	seen := make(map[int]bool)
-	var out []int
-	for _, p := range ports {
-		if !seen[p] {
-			seen[p] = true
-			out = append(out, p)
-		}
-	}
-	sort.Ints(out)
-	return out
-}
-
-// ============================================================
-// 搜索与筛选
-// ============================================================
-
-// applyFilter 根据分组选择和搜索关键词过滤端口列表
 func (pv *PortViewer) applyFilter() {
 	if pv.table == nil {
 		return
@@ -711,32 +486,6 @@ func (pv *PortViewer) applyFilter() {
 	pv.table.Refresh()
 }
 
-// matchAny 检查值是否在目标列表中
-func matchAny(p int, targets ...int) bool {
-	for _, t := range targets {
-		if p == t {
-			return true
-		}
-	}
-	return false
-}
-
-// ============================================================
-// 备注编辑
-// ============================================================
-
-const maxNoteLen = 100 // 备注最大字符数（按 rune 计，支持中文）
-
-// truncateNote 截断备注文本，超出部分用 ... 替代
-func truncateNote(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max]) + "..."
-}
-
-// editNote 打开备注编辑弹窗
 func (pv *PortViewer) editNote() {
 	if pv.selRow < 0 || pv.selRow >= len(pv.filtered) {
 		dialog.ShowInformation("提示", "请先选择一行", pv.win)
@@ -817,11 +566,6 @@ func (pv *PortViewer) editNote() {
 	dlg.Show()
 }
 
-// ============================================================
-// 系统信息（CPU / 内存 / GPU）
-// ============================================================
-
-// updateSysInfo 异步获取并更新系统信息显示
 func updateSysInfo(label *widget.Label) {
 	go func() {
 		cpu := getCPU()
@@ -835,187 +579,6 @@ func updateSysInfo(label *widget.Label) {
 	}()
 }
 
-// getCPU 读取 CPU 使用率（Linux: /proc/stat，macOS: top，Windows: wmic）
-func getCPU() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return getCPUDarwin()
-	case "windows":
-		return getCPUWindows()
-	}
-	return getCPULinux()
-}
-
-func getCPUDarwin() string {
-	out, err := exec.Command("top", "-l", "1", "-n", "0").Output()
-	if err != nil {
-		return "N/A"
-	}
-	re := regexp.MustCompile(`CPU usage:\s*([\d.]+)%\s*user,\s*([\d.]+)%\s*sys`)
-	if m := re.FindStringSubmatch(string(out)); len(m) == 3 {
-		user := atof(m[1])
-		sys := atof(m[2])
-		return fmt.Sprintf("%.1f%%", user+sys)
-	}
-	return "N/A"
-}
-
-func getCPUWindows() string {
-	out, err := exec.Command("wmic", "cpu", "get", "loadpercentage", "/format:csv").Output()
-	if err != nil {
-		return "N/A"
-	}
-	// wmic 输出含表头，取最后一行
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		f := strings.Split(lines[i], ",")
-		if len(f) >= 2 {
-			if pct := atof(strings.TrimSpace(f[len(f)-1])); pct > 0 {
-				return fmt.Sprintf("%.0f%%", pct)
-			}
-		}
-	}
-	return "N/A"
-}
-
-func getCPULinux() string {
-	d, _ := os.ReadFile("/proc/stat")
-	for _, line := range strings.Split(string(d), "\n") {
-		if !strings.HasPrefix(line, "cpu ") {
-			continue
-		}
-		f := strings.Fields(line)
-		if len(f) < 5 {
-			break
-		}
-		t, id := 0, 0
-		for i, v := range f[1:] {
-			n, _ := strconv.Atoi(v)
-			t += n
-			if i == 3 {
-				id = n
-			}
-		}
-		if t > 0 {
-			return fmt.Sprintf("%.1f%%", float64(t-id)/float64(t)*100)
-		}
-	}
-	return "N/A"
-}
-
-// getMem 读取内存使用率（Linux: /proc/meminfo，macOS: vm_stat+sysctl，Windows: wmic）
-func getMem() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return getMemDarwin()
-	case "windows":
-		return getMemWindows()
-	}
-	return getMemLinux()
-}
-
-func getMemLinux() string {
-	d, _ := os.ReadFile("/proc/meminfo")
-	t, a := 0, 0
-	for _, line := range strings.Split(string(d), "\n") {
-		fmt.Sscanf(line, "MemTotal: %d kB", &t)
-		fmt.Sscanf(line, "MemAvailable: %d kB", &a)
-	}
-	if t == 0 {
-		return "N/A"
-	}
-	u := t - a
-	return fmt.Sprintf("%.1f%% (%d/%d GB)", float64(u)/float64(t)*100, u/1024/1024, t/1024/1024)
-}
-
-// getMemDarwin macOS 版内存信息，通过 sysctl + vm_stat 获取
-func getMemDarwin() string {
-	// 总物理内存（字节）
-	totalOut, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
-	if err != nil {
-		return "N/A"
-	}
-	totalBytes := atof(strings.TrimSpace(string(totalOut)))
-	if totalBytes == 0 {
-		return "N/A"
-	}
-
-	// vm_stat 获取页面使用情况
-	vmOut, err := exec.Command("vm_stat").Output()
-	if err != nil {
-		return "N/A"
-	}
-	// 解析 vm_stat 输出: "Pages free: 12345." / "Pages active: 67890." 等
-	vmText := string(vmOut)
-	getPages := func(key string) float64 {
-		re := regexp.MustCompile(key + `:\s+(\d+)`)
-		if m := re.FindStringSubmatch(vmText); len(m) == 2 {
-			return atof(m[1])
-		}
-		return 0
-	}
-	pageSize := 16384.0 // macOS ARM 默认页大小 16KB
-	// 也可以从 vm_stat 中读取，但 16384 是 Apple Silicon 标准值
-	freePages := getPages("Pages free")
-	activePages := getPages("Pages active")
-	inactivePages := getPages("Pages inactive")
-	wiredPages := getPages("Pages wired down")
-	usedPages := activePages + wiredPages + (inactivePages * 0.5) // 近似已使用
-
-	usedBytes := usedPages * pageSize
-	totalGB := totalBytes / 1024 / 1024 / 1024
-	usedGB := usedBytes / 1024 / 1024 / 1024
-	pct := usedBytes / totalBytes * 100
-
-	// unused: freePages for reference
-	_ = freePages
-
-	return fmt.Sprintf("%.1f%% (%.1f/%.0f GB)", pct, usedGB, totalGB)
-}
-
-// getMemWindows Windows 版内存信息，通过 wmic 获取
-func getMemWindows() string {
-	out, err := exec.Command("wmic", "OS", "get",
-		"TotalVisibleMemorySize,FreePhysicalMemory", "/format:csv").Output()
-	if err != nil {
-		return "N/A"
-	}
-	// 输出: \nNode,FreePhysicalMemory,TotalVisibleMemorySize\nNODE,12345678,16777216\n
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	for _, l := range lines {
-		f := strings.Split(l, ",")
-		if len(f) >= 3 {
-			freeKB := atof(strings.TrimSpace(f[1]))
-			totalKB := atof(strings.TrimSpace(f[2]))
-			if totalKB > 0 {
-				usedKB := totalKB - freeKB
-				totalGB := totalKB / 1024 / 1024
-				usedGB := usedKB / 1024 / 1024
-				pct := usedKB / totalKB * 100
-				return fmt.Sprintf("%.1f%% (%.1f/%.0f GB)", pct, usedGB, totalGB)
-			}
-		}
-	}
-	return "N/A"
-}
-
-// getGPU 通过 nvidia-smi 读取 GPU 信息
-func getGPU() string {
-	out, _ := exec.Command("nvidia-smi",
-		"--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
-		"--format=csv,noheader,nounits").Output()
-	p := strings.Split(strings.TrimSpace(string(out)), ", ")
-	if len(p) < 3 {
-		return ""
-	}
-	return fmt.Sprintf("GPU: %s%% | %s/%s MB | %s°C", p[0], p[1], p[2], p[3])
-}
-
-// ============================================================
-// 进程详情弹窗
-// ============================================================
-
-// showDetail 打开进程详情弹窗（双击非备注列触发）
 func (pv *PortViewer) showDetail() {
 	if pv.selRow < 0 || pv.selRow >= len(pv.filtered) {
 		dialog.ShowInformation("提示", "请先选择一行", pv.win)
@@ -1066,167 +629,6 @@ func (pv *PortViewer) showDetail() {
 	dialog.ShowCustom(fmt.Sprintf("端口 %d", e.Port), "关闭", content, pv.win)
 }
 
-// readProcess 从 /proc/[pid]/stat 读取进程状态、CPU、内存（macOS/Windows 上用对应命令）
-func readProcess(pid int) string {
-	switch runtime.GOOS {
-	case "darwin":
-		return readProcessDarwin(pid)
-	case "windows":
-		return readProcessWindows(pid)
-	}
-	d, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return "状态: 已结束或无权限"
-	}
-	f := strings.Fields(string(d))
-	if len(f) < 24 {
-		return ""
-	}
-
-	// 进程状态映射
-	st := map[string]string{
-		"R": "运行中", "S": "休眠", "D": "不可中断",
-		"Z": "僵尸", "T": "已停止",
-	}[f[2]]
-	if st == "" {
-		st = f[2]
-	}
-
-	ut, _ := strconv.Atoi(f[13])  // 用户态 CPU 时间
-	sti, _ := strconv.Atoi(f[14]) // 内核态 CPU 时间
-	rss, _ := strconv.Atoi(f[23]) // RSS 页数（每页 4KB）
-	nice, _ := strconv.Atoi(f[18])
-	thr, _ := strconv.Atoi(f[19]) // 线程数
-	rssM := float64(rss*4) / 1024 // RSS 转 MB
-
-	// CPU 使用率 = (ut+sti) / uptime 秒
-	ud, _ := os.ReadFile("/proc/uptime")
-	us := 0.0
-	fmt.Sscanf(string(ud), "%f", &us)
-	cpuP := 0.0
-	if us > 0 {
-		cpuP = float64(ut+sti) / 100 / us * 100
-	}
-
-	// 内存占比
-	mt := uint64(0)
-	if d2, _ := os.ReadFile("/proc/meminfo"); d2 != nil {
-		for _, l := range strings.Split(string(d2), "\n") {
-			fmt.Sscanf(l, "MemTotal: %d kB", &mt)
-		}
-	}
-	mp := 0.0
-	if mt > 0 {
-		mp = float64(rss*4) / float64(mt) * 100
-	}
-
-	return fmt.Sprintf("状态: %s | CPU: %.2f%% | 内存: %.1f MB (%.2f%%) | 优先级: %d | 线程: %d",
-		st, cpuP, rssM, mp, nice, thr)
-}
-
-// readProcessGPU 通过 nvidia-smi 查看某进程的 GPU 显存使用
-func readProcessGPU(pid int) string {
-	out, _ := exec.Command("nvidia-smi",
-		"--query-compute-apps=pid,used_memory,name",
-		"--format=csv,noheader,nounits").Output()
-	ps := strconv.Itoa(pid)
-	for _, line := range strings.Split(string(out), "\n") {
-		if !strings.HasPrefix(line, ps+",") {
-			continue
-		}
-		p := strings.SplitN(line, ", ", 3)
-		if len(p) == 3 {
-			return fmt.Sprintf("GPU显存: %s MB (%s)", p[1], p[2]) + "\n"
-		}
-	}
-	return ""
-}
-
-// readProcessDarwin 通过 ps 获取 macOS 进程详情
-func readProcessDarwin(pid int) string {
-	// ps -p PID -o state= -o %cpu= -o rss= -o nice= 获取关键指标
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid),
-		"-o", "state=", "-o", "%cpu=", "-o", "rss=", "-o", "nice=").Output()
-	if err != nil {
-		return "状态: 已结束或无权限"
-	}
-	f := strings.Fields(strings.TrimSpace(string(out)))
-	if len(f) < 4 {
-		return fmt.Sprintf("PID %d (无权限)", pid)
-	}
-	// f[0]=状态, f[1]=CPU%, f[2]=RSS(KB), f[3]=优先级
-	st := f[0]
-	cpuP := atof(f[1])
-	rssKB := atof(f[2])
-	nice := atoi(f[3])
-	rssM := rssKB / 1024.0
-
-	// 状态映射
-	stMap := map[string]string{
-		"R": "运行中", "S": "休眠", "D": "不可中断",
-		"Z": "僵尸", "T": "已停止",
-	}
-	if v, ok := stMap[st]; ok {
-		st = v
-	}
-
-	return fmt.Sprintf("状态: %s | CPU: %.2f%% | 内存: %.1f MB | 优先级: %d | 线程: N/A",
-		st, cpuP, rssM, nice)
-}
-
-// readProcessWindows 通过 tasklist 获取 Windows 进程详情
-func readProcessWindows(pid int) string {
-	out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid),
-		"/FO", "CSV", "/NH").Output()
-	if err != nil || len(out) == 0 {
-		return "状态: 已结束或无权限"
-	}
-	line := strings.TrimSpace(string(out))
-	if !strings.HasPrefix(line, "\"") || strings.Contains(line, "INFO:") {
-		return "状态: 已结束或无权限"
-	}
-	parts := strings.Split(line, "\",\"")
-	if len(parts) < 5 {
-		return fmt.Sprintf("PID %d (无法读取详情)", pid)
-	}
-	name := strings.Trim(parts[0], "\"")
-	memStr := strings.Trim(parts[len(parts)-1], "\"")
-	memStr = strings.ReplaceAll(memStr, ",", "")
-	memStr = strings.TrimSuffix(memStr, " K")
-	memStr = strings.TrimSpace(memStr)
-	memKB := atof(memStr)
-	memMB := memKB / 1024.0
-
-	return fmt.Sprintf("进程: %s | 内存: %.1f MB | 线程: N/A", name, memMB)
-}
-
-// readCmdline 读取进程命令行（Linux: /proc，macOS: ps，Windows: wmic）
-func readCmdline(pid int) string {
-	switch runtime.GOOS {
-	case "darwin":
-		out, _ := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output()
-		return strings.TrimSpace(string(out))
-	case "windows":
-		out, _ := exec.Command("wmic", "process", "where",
-			fmt.Sprintf("ProcessId=%d", pid), "get", "CommandLine", "/format:csv").Output()
-		for _, l := range strings.Split(string(out), "\n") {
-			l = strings.TrimSpace(l)
-			idx := strings.LastIndex(l, ",")
-			if idx >= 0 && idx < len(l)-1 {
-				return strings.TrimSpace(l[idx+1:])
-			}
-		}
-		return ""
-	}
-	d, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
-	return strings.ReplaceAll(strings.TrimSpace(string(d)), "\x00", " ")
-}
-
-// ============================================================
-// 端口扫描（ss + /proc）
-// ============================================================
-
-// refresh 重新扫描端口并更新 UI
 func (pv *PortViewer) refresh() {
 	pv.status.SetText("扫描中...")
 	entries, err := getPorts()
@@ -1251,384 +653,6 @@ func (pv *PortViewer) refresh() {
 	pv.status.SetText(msg)
 }
 
-// getPorts 根据操作系统选择端口扫描方式
-func getPorts() ([]PortEntry, error) {
-	switch runtime.GOOS {
-	case "darwin":
-		return getPortsDarwin()
-	case "windows":
-		return getPortsWindows()
-	default:
-		return getPortsLinux()
-	}
-}
-
-// getPortsLinux 调用 ss -tulnp 扫描所有监听端口，补全空闲端口
-func getPortsLinux() ([]PortEntry, error) {
-	raw, err := execCmd("ss", "-tulnp")
-	if err != nil {
-		return nil, fmt.Errorf("ss 失败: %w", err)
-	}
-	seen := make(map[int]bool)
-	entries := make([]PortEntry, 0, 100)
-
-	// 解析 ss 输出：提取进程名和 PID
-	re := regexp.MustCompile(`"([^"]+)".*pid=(\d+)`)
-
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "Netid") {
-			continue // 跳过表头
-		}
-		f := strings.Fields(line)
-		if len(f) < 5 {
-			continue
-		}
-		addr := f[4] // 本地地址，如 0.0.0.0:8080 或 [::]:22
-		idx := strings.LastIndex(addr, ":")
-		if idx < 0 {
-			continue
-		}
-		port := atoi(addr[idx+1:])
-		if port == 0 {
-			continue
-		}
-
-		// 提取进程名和 PID
-		pn, pid := "", 0
-		if len(f) > 5 {
-			if m := re.FindStringSubmatch(strings.Join(f[5:], " ")); len(m) >= 3 {
-				pn, pid = m[1], atoi(m[2])
-			}
-		}
-		seen[port] = true
-
-		// 读取 exe 路径和 comm（进程名备用）
-		ep := ""
-		if pid > 0 {
-			ep, _ = os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
-			if pn == "" {
-				if d, _ := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid)); len(d) > 0 {
-					pn = strings.TrimSpace(string(d))
-				}
-			}
-			if pn == "" {
-				pn = fmt.Sprintf("PID:%d", pid)
-			}
-		}
-
-		// 从 /proc/[pid]/statm 读取 RSS 内存
-		memMB := 0.0
-		if pid > 0 {
-			if d, err := os.ReadFile(fmt.Sprintf("/proc/%d/statm", pid)); err == nil {
-				f := strings.Fields(string(d))
-				if len(f) >= 2 {
-					rss, _ := strconv.Atoi(f[1])
-					memMB = float64(rss) * 4096 / 1024 / 1024
-				}
-			}
-		}
-
-		entries = append(entries, PortEntry{
-			Port: port, Protocol: f[0], PID: pid,
-			ProcessName: pn, Status: f[1],
-			MemoryMB: memMB, ExePath: ep, LocalAddr: addr,
-		})
-	}
-
-	// 补全未出现在 ss 输出中的空闲端口
-	for p := 0; p <= 65535; p++ {
-		if !seen[p] {
-			entries = append(entries, PortEntry{Port: p, Status: "空闲"})
-		}
-	}
-	return entries, nil
-}
-
-// getPortsDarwin macOS 版本：使用 lsof -iTCP -sTCP:LISTEN 扫描监听端口
-func getPortsDarwin() ([]PortEntry, error) {
-	// macOS 上用 lsof 替代 ss，-n -P 避免 DNS 反查和端口名转换
-	// TCP 只取 LISTEN 状态；UDP 无状态过滤，直接列出全部 UDP socket
-	rawTCP, errTCP := execCmd("lsof", "-iTCP", "-sTCP:LISTEN", "-n", "-P")
-	rawUDP, errUDP := execCmd("lsof", "-iUDP", "-n", "-P")
-	// lsof 没有匹配项时返回 exit 1，所以仅在两个命令都无输出时视为失败
-	if (errTCP != nil && rawTCP == "") && (errUDP != nil && rawUDP == "") {
-		return nil, fmt.Errorf("lsof 失败: %w", errTCP)
-	}
-
-	seen := make(map[int]bool)
-	entries := make([]PortEntry, 0, 100)
-	parseLsofDarwin(rawTCP, "tcp", seen, &entries)
-	parseLsofDarwin(rawUDP, "udp", seen, &entries)
-
-	// 补全空闲端口
-	for p := 0; p <= 65535; p++ {
-		if !seen[p] {
-			entries = append(entries, PortEntry{Port: p, Status: "空闲"})
-		}
-	}
-	return entries, nil
-}
-
-// parseLsofDarwin 解析 macOS lsof 输出并追加到 entries
-// baseProto 为 "tcp"/"udp"，IPv6 自动映射为 tcp6/udp6
-func parseLsofDarwin(raw, baseProto string, seen map[int]bool, entries *[]PortEntry) {
-	// lsof 输出格式:
-	// COMMAND   PID   USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
-	// com.dock  1234  user   10u  IPv4 0x...       0t0  TCP *:8080 (LISTEN)
-	lines := strings.Split(raw, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "COMMAND") {
-			continue
-		}
-		f := strings.Fields(line)
-		if len(f) < 9 {
-			continue
-		}
-		// f[0]=COMMAND, f[1]=PID, f[8]=NAME
-		pid := atoi(f[1])
-		nameField := f[8] // e.g. "*:8080" 或 "127.0.0.1:3000"
-
-		// 提取端口号：取最后一个 : 之后的部分
-		idx := strings.LastIndex(nameField, ":")
-		if idx < 0 {
-			continue
-		}
-		port := atoi(nameField[idx+1:])
-		if port == 0 {
-			continue
-		}
-		seen[port] = true
-
-		// 进程名
-		pn := f[0]
-		if pn == "" {
-			pn = fmt.Sprintf("PID:%d", pid)
-		}
-
-		// 协议类型（lsof 第 4 列：IPv4/IPv6，映射为 tcp/tcp6 或 udp/udp6）
-		proto := baseProto
-		if len(f) >= 5 && f[4] == "IPv6" {
-			proto = baseProto + "6"
-		}
-
-		// 状态：TCP 为 LISTEN，UDP 为 UNCONN（与 Linux ss 输出保持一致）
-		status := "LISTEN"
-		if baseProto == "udp" {
-			status = "UNCONN"
-		}
-
-		// 读取 exe 路径（macOS 通过 lsof -d txt 获取）
-		ep := ""
-		if pid > 0 {
-			ep = getExePathDarwin(pid)
-		}
-
-		// macOS 上用 ps 获取 RSS 内存
-		memMB := 0.0
-		if pid > 0 {
-			memMB = getProcessMemDarwin(pid)
-		}
-
-		*entries = append(*entries, PortEntry{
-			Port: port, Protocol: proto, PID: pid,
-			ProcessName: pn, Status: status,
-			MemoryMB: memMB, ExePath: ep, LocalAddr: nameField,
-		})
-	}
-}
-
-// getProcessMemDarwin 通过 ps 获取进程 RSS 内存（MB）
-func getProcessMemDarwin(pid int) float64 {
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "rss=").Output()
-	if err != nil {
-		return 0
-	}
-	// ps rss= 返回 KB
-	kb := atoi(strings.TrimSpace(string(out)))
-	return float64(kb) / 1024.0
-}
-
-// getExePathDarwin 通过 lsof -d txt 获取可执行文件完整路径
-func getExePathDarwin(pid int) string {
-	out, err := exec.Command("lsof", "-p", strconv.Itoa(pid), "-a", "-d", "txt", "-Fn").Output()
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.HasPrefix(line, "n") && len(line) > 1 {
-			return line[1:]
-		}
-	}
-	return ""
-}
-
-// ============================================================
-// Windows 端口扫描（netstat -ano）
-// ============================================================
-
-// getPortsWindows Windows 版本：使用 netstat -ano 扫描监听端口
-func getPortsWindows() ([]PortEntry, error) {
-	raw, err := execCmd("netstat", "-ano")
-	if err != nil {
-		return nil, fmt.Errorf("netstat 失败: %w", err)
-	}
-	seen := make(map[int]bool)
-	entries := make([]PortEntry, 0, 100)
-
-	// netstat -ano 输出格式：
-	// Proto  Local Address          Foreign Address        State           PID
-	// TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       1234
-	// UDP    0.0.0.0:5353           *:*                                    9012
-	lines := strings.Split(raw, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "Proto") || strings.HasPrefix(line, "Active") {
-			continue
-		}
-		f := strings.Fields(line)
-		if len(f) < 2 {
-			continue
-		}
-		proto := strings.ToLower(f[0])
-		if proto != "tcp" && proto != "udp" {
-			continue
-		}
-
-		// 本地地址：0.0.0.0:8080 或 [::]:22
-		local := f[1]
-		idx := strings.LastIndex(local, ":")
-		if idx < 0 {
-			continue
-		}
-		port := atoi(local[idx+1:])
-		if port == 0 {
-			continue
-		}
-		seen[port] = true
-
-		// PID 在最后一列
-		pid := 0
-		if len(f) >= 5 {
-			pid = atoi(f[len(f)-1])
-		}
-
-		// 进程名
-		pn := ""
-		ep := ""
-		memMB := 0.0
-		if pid > 0 {
-			pn, ep = getProcessInfoWindows(pid)
-			memMB = getProcessMemWindows(pid)
-		}
-		if pn == "" && pid > 0 {
-			pn = fmt.Sprintf("PID:%d", pid)
-		}
-
-		// 状态映射
-		status := "UNKNOWN"
-		if len(f) >= 4 {
-			status = f[3]
-		}
-		if proto == "udp" && status == "UNKNOWN" {
-			status = "LISTEN"
-		}
-
-		entries = append(entries, PortEntry{
-			Port: port, Protocol: proto, PID: pid,
-			ProcessName: pn, Status: status,
-			MemoryMB: memMB, ExePath: ep, LocalAddr: local,
-		})
-	}
-
-	// 补全空闲端口
-	for p := 0; p <= 65535; p++ {
-		if !seen[p] {
-			entries = append(entries, PortEntry{Port: p, Status: "空闲"})
-		}
-	}
-	return entries, nil
-}
-
-// getProcessInfoWindows 通过 tasklist 获取 Windows 进程名和可执行文件路径
-func getProcessInfoWindows(pid int) (name, exePath string) {
-	// tasklist /FI "PID eq 1234" /FO CSV /NH
-	out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid),
-		"/FO", "CSV", "/NH").Output()
-	if err != nil {
-		return "", ""
-	}
-	// 格式: "process.exe","1234","Console","1","123,456 K"
-	line := strings.TrimSpace(string(out))
-	if !strings.HasPrefix(line, "\"") {
-		return "", ""
-	}
-	parts := strings.Split(line, "\",\"")
-	if len(parts) < 2 {
-		return "", ""
-	}
-	name = strings.Trim(parts[0], "\"")
-	// 获取 exe 路径通过 wmic
-	exeOut, err := exec.Command("wmic", "process", "where",
-		fmt.Sprintf("ProcessId=%d", pid), "get", "ExecutablePath", "/format:csv").Output()
-	if err == nil {
-		// 格式: \nNodeName,ExecutablePath\nNODE,C:\path	o\process.exe\n
-		for _, l := range strings.Split(string(exeOut), "\n") {
-			l = strings.TrimSpace(l)
-			if strings.Contains(l, ".exe") || strings.Contains(l, ":\\") {
-				// 取最后一列
-				idx := strings.LastIndex(l, ",")
-				if idx >= 0 {
-					exePath = strings.TrimSpace(l[idx+1:])
-				}
-				break
-			}
-		}
-	}
-	return
-}
-
-// getProcessMemWindows 通过 tasklist 获取 Windows 进程内存（MB）
-func getProcessMemWindows(pid int) float64 {
-	out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid),
-		"/FO", "CSV", "/NH").Output()
-	if err != nil {
-		return 0
-	}
-	line := strings.TrimSpace(string(out))
-	parts := strings.Split(line, "\",\"")
-	if len(parts) < 5 {
-		return 0
-	}
-	// 最后一列是内存，如 "123,456 K"
-	memStr := strings.Trim(parts[len(parts)-1], "\"")
-	memStr = strings.ReplaceAll(memStr, ",", "")
-	memStr = strings.TrimSuffix(memStr, " K")
-	memStr = strings.TrimSpace(memStr)
-	kb := atof(memStr)
-	return kb / 1024.0
-}
-
-// execCmd 执行命令并返回 stdout
-func execCmd(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).Output()
-	return string(out), err
-}
-
-// killProcess 终止指定进程：Windows 用 taskkill，Linux/macOS 用 kill -9
-func killProcess(pid int) error {
-	if runtime.GOOS == "windows" {
-		return exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid)).Run()
-	}
-	return exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
-}
-
-// ============================================================
-// 用户操作（终止进程、打开位置、排序）
-// ============================================================
-
-// killSelected 终止当前选中端口的进程（SIGKILL）
 func (pv *PortViewer) killSelected() {
 	if pv.selRow < 0 || pv.selRow >= len(pv.filtered) {
 		dialog.ShowInformation("提示", "请先选择一行", pv.win)
@@ -1653,7 +677,6 @@ func (pv *PortViewer) killSelected() {
 		}, pv.win)
 }
 
-// openSelected 用系统文件管理器打开当前进程的可执行文件目录
 func (pv *PortViewer) openSelected() {
 	if pv.selRow < 0 || pv.selRow >= len(pv.filtered) {
 		return
@@ -1676,7 +699,6 @@ func (pv *PortViewer) openSelected() {
 	exec.Command(cmd, arg).Start()
 }
 
-// sortOccupied 按"占用在前、端口号升序"排列
 func (pv *PortViewer) sortOccupied() {
 	sort.Slice(pv.entries, func(i, j int) bool {
 		io, jo := pv.entries[i].PID > 0, pv.entries[j].PID > 0
@@ -1687,36 +709,4 @@ func (pv *PortViewer) sortOccupied() {
 	})
 	pv.applyFilter()
 	pv.status.SetText("已按「占用在前」排序")
-}
-
-// atoi 字符串转 int，失败返回 0
-func atoi(s string) int {
-	n, _ := strconv.Atoi(s)
-	return n
-}
-
-// atof 字符串转 float64，失败返回 0
-func atof(s string) float64 {
-	n, _ := strconv.ParseFloat(s, 64)
-	return n
-}
-
-// fmtPort 格式化端口号，知名端口显示名称
-func fmtPort(p int) string {
-	// 知名端口映射
-	m := map[int]string{
-		22: "SSH", 80: "HTTP", 443: "HTTPS", 3306: "MySQL",
-		5432: "PG", 6379: "Redis", 8080: "HTTP-alt", 27017: "Mongo",
-		53: "DNS", 25: "SMTP", 3389: "RDP",
-	}
-	if p == 0 {
-		return "0 (保留)"
-	}
-	if n, ok := m[p]; ok {
-		return fmt.Sprintf("%d (%s)", p, n)
-	}
-	if p < 1024 {
-		return strconv.Itoa(p)
-	}
-	return strconv.Itoa(p)
 }

@@ -16,5 +16,4 @@ portview_upx
 .DS_Store
 Thumbs.db
 
-# 用户数据（运行时生成，不提交）
-.portview/
+# 用户数据：应用写入 $HOME/.portview/notes.json（仓库外，无需忽略）

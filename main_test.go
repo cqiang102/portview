@@ -430,7 +430,11 @@ python3  123 me  4u  IPv4 0x123 0t0 TCP *:8080 (LISTEN)
 sshd     456 me  5u  IPv6 0x456 0t0 TCP [::]:22 (LISTEN)`
 	seen := make(map[int]bool)
 	entries := make([]PortEntry, 0, 2)
-	parseLsofDarwin(raw, "tcp", seen, &entries)
+	cache := map[int]darwinProcInfo{
+		123: {exePath: "/usr/bin/python3", memMB: 12.5},
+		456: {exePath: "/usr/sbin/sshd", memMB: 3.2},
+	}
+	parseLsofDarwin(raw, "tcp", seen, &entries, cache)
 
 	if len(entries) != 2 {
 		t.Fatalf("期望 2 条 TCP，得到 %d", len(entries))
@@ -438,6 +442,9 @@ sshd     456 me  5u  IPv6 0x456 0t0 TCP [::]:22 (LISTEN)`
 	e0, e1 := entries[0], entries[1]
 	if e0.Port != 8080 || e0.Protocol != "tcp" || e0.PID != 123 || e0.ProcessName != "python3" || e0.Status != "LISTEN" {
 		t.Errorf("TCP 解析错误: %+v", e0)
+	}
+	if e0.ExePath != "/usr/bin/python3" || e0.MemoryMB != 12.5 {
+		t.Errorf("TCP 缓存字段错误: %+v", e0)
 	}
 	if e1.Port != 22 || e1.Protocol != "tcp6" || e1.PID != 456 {
 		t.Errorf("TCP6 解析错误: %+v", e1)
@@ -453,7 +460,11 @@ mDNSResponder 789 me 14u IPv4 0x789 0t0 UDP *:5353
 racoon       1000 me  3u IPv6 0xabc 0t0 UDP [::]:500`
 	seen := make(map[int]bool)
 	entries := make([]PortEntry, 0, 2)
-	parseLsofDarwin(raw, "udp", seen, &entries)
+	cache := map[int]darwinProcInfo{
+		789:  {exePath: "/usr/sbin/mDNSResponder", memMB: 8.1},
+		1000: {exePath: "/usr/sbin/racoon", memMB: 2.0},
+	}
+	parseLsofDarwin(raw, "udp", seen, &entries, cache)
 
 	if len(entries) != 2 {
 		t.Fatalf("期望 2 条 UDP，得到 %d", len(entries))
@@ -461,6 +472,9 @@ racoon       1000 me  3u IPv6 0xabc 0t0 UDP [::]:500`
 	e0, e1 := entries[0], entries[1]
 	if e0.Port != 5353 || e0.Protocol != "udp" || e0.PID != 789 || e0.Status != "UNCONN" {
 		t.Errorf("UDP 解析错误: %+v", e0)
+	}
+	if e0.ExePath != "/usr/sbin/mDNSResponder" || e0.MemoryMB != 8.1 {
+		t.Errorf("UDP 缓存字段错误: %+v", e0)
 	}
 	if e1.Port != 500 || e1.Protocol != "udp6" {
 		t.Errorf("UDP6 解析错误: %+v", e1)
@@ -470,7 +484,7 @@ racoon       1000 me  3u IPv6 0xabc 0t0 UDP [::]:500`
 func TestParseLsofDarwin_Empty(t *testing.T) {
 	seen := make(map[int]bool)
 	entries := make([]PortEntry, 0)
-	parseLsofDarwin("", "tcp", seen, &entries)
+	parseLsofDarwin("", "tcp", seen, &entries, make(map[int]darwinProcInfo))
 	if len(entries) != 0 {
 		t.Errorf("空输出应无条目，得到 %d", len(entries))
 	}
@@ -496,5 +510,63 @@ func TestMetaStore_SaveAtomic(t *testing.T) {
 	}
 	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
 		t.Errorf("临时文件应已清理: %v", err)
+	}
+}
+
+// ---------- parseSSOutput ----------
+
+func TestParseSSOutput(t *testing.T) {
+	raw := `Netid  State   Recv-Q Send-Q Local Address:Port          Peer Address:Port Process
+tcp    LISTEN  0      128    0.0.0.0:8080              0.0.0.0:*          users:(("nginx",pid=1234,fd=6))
+tcp    LISTEN  0      128    [::]:22                   0.0.0.0:*          users:(("sshd",pid=567,fd=3))
+udp    UNCONN  0      0      0.0.0.0:5353              0.0.0.0:*
+tcp    LISTEN  0      128    127.0.0.1:99999           0.0.0.0:*`
+	entries := parseSSOutput(raw)
+
+	if len(entries) != 3 {
+		t.Fatalf("期望 3 条，得到 %d: %+v", len(entries), entries)
+	}
+	e0, e1, e2 := entries[0], entries[1], entries[2]
+	if e0.Port != 8080 || e0.Protocol != "tcp" || e0.Status != "LISTEN" || e0.PID != 1234 || e0.ProcessName != "nginx" {
+		t.Errorf("TCP 解析错误: %+v", e0)
+	}
+	if e1.Port != 22 || e1.Protocol != "tcp" || e1.PID != 567 || e1.ProcessName != "sshd" {
+		t.Errorf("TCP6 解析错误: %+v", e1)
+	}
+	if e2.Port != 5353 || e2.Protocol != "udp" || e2.Status != "UNCONN" || e2.PID != 0 {
+		t.Errorf("UDP 解析错误: %+v", e2)
+	}
+}
+
+// ---------- parseNetstatOutput ----------
+
+func TestParseNetstatOutput(t *testing.T) {
+	raw := `Proto  Local Address          Foreign Address        State           PID
+TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       1234
+UDP    0.0.0.0:5353           *:*                                    9012
+TCP    127.0.0.1:9090         0.0.0.0:0              LISTENING       9999`
+	procInfo := map[int]windowsProcInfo{
+		1234: {name: "nginx.exe", exePath: `C:\nginx\nginx.exe`, memMB: 12.5},
+		9012: {name: "svchost.exe", exePath: `C:\Windows\System32\svchost.exe`, memMB: 8.0},
+	}
+	entries := parseNetstatOutput(raw, procInfo)
+
+	if len(entries) != 3 {
+		t.Fatalf("期望 3 条，得到 %d: %+v", len(entries), entries)
+	}
+	e0, e1, e2 := entries[0], entries[1], entries[2]
+	if e0.Port != 8080 || e0.Protocol != "tcp" || e0.PID != 1234 || e0.Status != "LISTENING" || e0.ProcessName != "nginx.exe" {
+		t.Errorf("TCP 解析错误: %+v", e0)
+	}
+	if e0.ExePath != `C:\nginx\nginx.exe` || e0.MemoryMB != 12.5 {
+		t.Errorf("TCP 进程信息错误: %+v", e0)
+	}
+	// UDP 行没有状态列，PID 在最后一列，应正常识别
+	if e1.Port != 5353 || e1.Protocol != "udp" || e1.PID != 9012 || e1.Status != "LISTEN" || e1.ProcessName != "svchost.exe" {
+		t.Errorf("UDP 解析错误: %+v", e1)
+	}
+	// 未在 procInfo 中的 PID 回退显示 PID:n
+	if e2.Port != 9090 || e2.PID != 9999 || e2.ProcessName != "PID:9999" {
+		t.Errorf("回退进程名错误: %+v", e2)
 	}
 }
