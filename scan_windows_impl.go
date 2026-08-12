@@ -166,12 +166,6 @@ func loadWindowsProcesses() map[int]windowsProcInfo {
 	return m
 }
 
-// powershellOut 执行 PowerShell 命令并返回 stdout（wmic 的现代替代）
-func powershellOut(script string) (string, error) {
-	out, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).Output()
-	return strings.TrimSpace(string(out)), err
-}
-
 // readProcessWindows 通过 tasklist 获取 Windows 进程详情
 func readProcessWindows(pid int) string {
 	out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid),
