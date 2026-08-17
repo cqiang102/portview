@@ -39,14 +39,10 @@ func getMem() string {
 
 // getGPU 通过 nvidia-smi 读取 GPU 信息
 func getGPU() string {
-	out, _ := exec.Command("nvidia-smi",
-		"--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
-		"--format=csv,noheader,nounits").Output()
-	p := strings.Split(strings.TrimSpace(string(out)), ", ")
-	if len(p) < 3 {
-		return ""
+	if runtime.GOOS == "windows" {
+		return getGPUWindows()
 	}
-	return fmt.Sprintf("GPU: %s%% | %s/%s MB | %s°C", p[0], p[1], p[2], p[3])
+	return getGPUNonWindows()
 }
 
 // ============================================================
@@ -118,7 +114,7 @@ func execCmd(name string, args ...string) (string, error) {
 // killProcess 终止指定进程：Windows 用 taskkill，Linux/macOS 用 kill -9
 func killProcess(pid int) error {
 	if runtime.GOOS == "windows" {
-		return exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid)).Run()
+		return killProcessWindows(pid)
 	}
-	return exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
+	return killProcessNonWindows(pid)
 }

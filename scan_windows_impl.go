@@ -5,7 +5,7 @@ package main
 
 import (
 	"fmt"
-	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -22,7 +22,7 @@ type windowsProcInfo struct {
 
 // getPortsWindows Windows 版本：使用 netstat -ano 扫描监听端口
 func getPortsWindows() ([]PortEntry, error) {
-	raw, err := execCmd("netstat", "-ano")
+	raw, err := execCmdWindows("netstat", "-ano")
 	if err != nil {
 		return nil, fmt.Errorf("netstat 失败: %w", err)
 	}
@@ -118,7 +118,7 @@ func loadWindowsProcesses() map[int]windowsProcInfo {
 	m := make(map[int]windowsProcInfo)
 
 	// tasklist /FO CSV /NH 全量输出，一次获取进程名和内存
-	if out, err := exec.Command("tasklist", "/FO", "CSV", "/NH").Output(); err == nil {
+	if out, err := execCmdWindows("tasklist", "/FO", "CSV", "/NH"); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
 			line = strings.TrimSpace(line)
 			if !strings.HasPrefix(line, "\"") || strings.Contains(line, "INFO:") {
@@ -166,14 +166,31 @@ func loadWindowsProcesses() map[int]windowsProcInfo {
 	return m
 }
 
+// getGPUWindows Windows 版 GPU 信息（隐藏控制台窗口）
+func getGPUWindows() string {
+	out, _ := execCmdWindows("nvidia-smi",
+		"--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
+		"--format=csv,noheader,nounits")
+	p := strings.Split(strings.TrimSpace(out), ", ")
+	if len(p) < 3 {
+		return ""
+	}
+	return fmt.Sprintf("GPU: %s%% | %s/%s MB | %s°C", p[0], p[1], p[2], p[3])
+}
+
+// killProcessWindows Windows 版终止进程（隐藏控制台窗口）
+func killProcessWindows(pid int) error {
+	return runCmdWindows("taskkill", "/F", "/PID", strconv.Itoa(pid))
+}
+
 // readProcessWindows 通过 tasklist 获取 Windows 进程详情
 func readProcessWindows(pid int) string {
-	out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid),
-		"/FO", "CSV", "/NH").Output()
-	if err != nil || len(out) == 0 {
+	out, err := execCmdWindows("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid),
+		"/FO", "CSV", "/NH")
+	if err != nil || out == "" {
 		return "状态: 已结束或无权限"
 	}
-	line := strings.TrimSpace(string(out))
+	line := strings.TrimSpace(out)
 	if !strings.HasPrefix(line, "\"") || strings.Contains(line, "INFO:") {
 		return "状态: 已结束或无权限"
 	}

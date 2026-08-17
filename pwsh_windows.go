@@ -20,3 +20,19 @@ func powershellOut(script string) (string, error) {
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
 }
+
+// execCmdWindows 在 Windows 上执行外部命令并返回 stdout。
+// 通过 HideWindow 确保不弹出控制台窗口（适用于 netstat、tasklist、nvidia-smi 等）。
+func execCmdWindows(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := cmd.Output()
+	return string(out), err
+}
+
+// runCmdWindows 在 Windows 上执行外部命令（不获取输出），确保不弹出控制台窗口。
+func runCmdWindows(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	return cmd.Run()
+}
