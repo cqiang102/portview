@@ -42,7 +42,14 @@ func getGPU() string {
 	if runtime.GOOS == "windows" {
 		return getGPUWindows()
 	}
-	return getGPUNonWindows()
+	out, _ := exec.Command("nvidia-smi",
+		"--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
+		"--format=csv,noheader,nounits").Output()
+	p := strings.Split(strings.TrimSpace(string(out)), ", ")
+	if len(p) < 3 {
+		return ""
+	}
+	return fmt.Sprintf("GPU: %s%% | %s/%s MB | %s°C", p[0], p[1], p[2], p[3])
 }
 
 // ============================================================
@@ -116,5 +123,5 @@ func killProcess(pid int) error {
 	if runtime.GOOS == "windows" {
 		return killProcessWindows(pid)
 	}
-	return killProcessNonWindows(pid)
+	return exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
 }

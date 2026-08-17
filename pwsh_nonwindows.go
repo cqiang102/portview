@@ -6,9 +6,7 @@
 package main
 
 import (
-	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 )
 
@@ -27,21 +25,4 @@ func execCmdWindows(name string, args ...string) (string, error) {
 // runCmdWindows 在非 Windows 平台上就是普通 exec（无需隐藏窗口）
 func runCmdWindows(name string, args ...string) error {
 	return exec.Command(name, args...).Run()
-}
-
-// getGPUNonWindows 非 Windows 平台的 GPU 信息
-func getGPUNonWindows() string {
-	out, _ := exec.Command("nvidia-smi",
-		"--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
-		"--format=csv,noheader,nounits").Output()
-	p := strings.Split(strings.TrimSpace(string(out)), ", ")
-	if len(p) < 3 {
-		return ""
-	}
-	return fmt.Sprintf("GPU: %s%% | %s/%s MB | %s°C", p[0], p[1], p[2], p[3])
-}
-
-// killProcessNonWindows 非 Windows 平台终止进程
-func killProcessNonWindows(pid int) error {
-	return exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
 }
