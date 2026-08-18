@@ -67,8 +67,11 @@ func readProcess(pid int) string {
 	return readProcessLinux(pid)
 }
 
-// readProcessGPU 通过 nvidia-smi 查看某进程的 GPU 显存使用
+// readProcessGPU 通过 nvidia-smi 查看某进程的 GPU 显存使用（按平台分发）
 func readProcessGPU(pid int) string {
+	if runtime.GOOS == "windows" {
+		return readProcessGPUWindows(pid)
+	}
 	out, _ := exec.Command("nvidia-smi",
 		"--query-compute-apps=pid,used_memory,name",
 		"--format=csv,noheader,nounits").Output()

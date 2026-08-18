@@ -209,6 +209,24 @@ func readProcessWindows(pid int) string {
 	return fmt.Sprintf("进程: %s | 内存: %.1f MB | 线程: N/A", name, memMB)
 }
 
+// readProcessGPUWindows Windows 版 GPU 显存查询（隐藏控制台窗口）
+func readProcessGPUWindows(pid int) string {
+	out, _ := execCmdWindows("nvidia-smi",
+		"--query-compute-apps=pid,used_memory,name",
+		"--format=csv,noheader,nounits")
+	ps := strconv.Itoa(pid)
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, ps+",") {
+			continue
+		}
+		p := strings.SplitN(line, ", ", 3)
+		if len(p) == 3 {
+			return fmt.Sprintf("GPU显存: %s MB (%s)", p[1], p[2]) + "\n"
+		}
+	}
+	return ""
+}
+
 // readCmdlineWindows 通过 PowerShell 获取 Windows 进程命令行（替代已废弃的 wmic）
 func readCmdlineWindows(pid int) string {
 	script := fmt.Sprintf(`(Get-CimInstance Win32_Process -Filter "ProcessId = %d").CommandLine`, pid)

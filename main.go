@@ -152,25 +152,25 @@ func main() {
 			return
 		}
 		now := time.Now()
-		// 双击检测：同一行、间隔 < doubleClickInterval
-		// 说明：Fyne 的 Table.Select 对已选中的单元格不会再次触发 OnSelected，
-		// 因此单击后必须立即取消选中，下一次点击同一行才能重新触发回调做双击检测。
-		if pv.selRow == row && now.Sub(pv.lastClick) < doubleClickInterval {
-			pv.selRow = -1
-			pv.table.UnselectAll()
-			if tci.Col == 7 {
-				pv.editNote() // 双击备注列 → 编辑备注
-			} else {
-				pv.showDetail() // 双击其他列 → 查看详情
-			}
-			return
-		}
-		// 单击：记录选中并立即取消选中（让下次点击可触发双击检测），状态栏提示
-		pv.selRow = row
-		pv.lastClick = now
+	// 双击检测：同一行、间隔 < doubleClickInterval
+	// 说明：Fyne 的 Table.Select 对已选中的单元格不会再次触发 OnSelected，
+	// 因此单击后必须立即取消选中，下一次点击同一行才能重新触发回调做双击检测。
+	if pv.selRow == row && now.Sub(pv.lastClick) < doubleClickInterval {
 		pv.table.UnselectAll()
-		pv.status.SetText(fmt.Sprintf("已选中: 端口 %s", fmtPort(pv.filtered[row].Port)))
+		if tci.Col == 7 {
+			pv.editNote() // 双击备注列 → 编辑备注
+		} else {
+			pv.showDetail() // 双击其他列 → 查看详情
+		}
+		pv.selRow = -1
+		return
 	}
+	// 单击：记录选中并立即取消选中（让下次点击可触发双击检测），状态栏提示
+	pv.selRow = row
+	pv.lastClick = now
+	pv.table.UnselectAll()
+	pv.status.SetText(fmt.Sprintf("已选中: 端口 %s", fmtPort(pv.filtered[row].Port)))
+}
 
 	// ---- 顶部按钮栏 ----
 	refreshBtn := widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), func() {
@@ -687,16 +687,14 @@ func (pv *PortViewer) openSelected() {
 		return
 	}
 	// macOS 用 open，Windows 用 explorer，Linux 用 xdg-open
-	cmd := "xdg-open"
-	arg := filepath.Dir(e.ExePath)
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = "open"
+		exec.Command("open", filepath.Dir(e.ExePath)).Start()
 	case "windows":
-		cmd = "explorer"
-		arg = "/select," + e.ExePath
+		runCmdWindows("explorer", "/select,\""+e.ExePath+"\"")
+	default:
+		exec.Command("xdg-open", filepath.Dir(e.ExePath)).Start()
 	}
-	exec.Command(cmd, arg).Start()
 }
 
 func (pv *PortViewer) sortOccupied() {
