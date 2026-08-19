@@ -5,6 +5,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -181,6 +183,17 @@ func getGPUWindows() string {
 // killProcessWindows Windows 版终止进程（隐藏控制台窗口）
 func killProcessWindows(pid int) error {
 	return runCmdWindows("taskkill", "/F", "/PID", strconv.Itoa(pid))
+}
+
+// openFileWindows 在 Windows 上打开文件所在位置并选中该文件。
+// 使用 cmd /c start 通过命令解释器处理路径（含空格也能正常工作）。
+func openFileWindows(path string) error {
+	// 先检查路径是否存在
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("文件不存在: %s", path)
+	}
+	// cmd /c start "" explorer /select,"path"
+	return exec.Command("cmd", "/c", "start", "", "explorer", "/select,\""+path+"\"").Start()
 }
 
 // readProcessWindows 通过 tasklist 获取 Windows 进程详情

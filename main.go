@@ -687,13 +687,18 @@ func (pv *PortViewer) openSelected() {
 		return
 	}
 	// macOS 用 open，Windows 用 explorer，Linux 用 xdg-open
+	var err error
 	switch runtime.GOOS {
 	case "darwin":
-		exec.Command("open", filepath.Dir(e.ExePath)).Start()
+		err = exec.Command("open", filepath.Dir(e.ExePath)).Start()
 	case "windows":
-		runCmdWindows("explorer", "/select,\""+e.ExePath+"\"")
+		// explorer 是 GUI 应用，无需 HideWindow；路径用 ShellExecute 更可靠
+		err = openFileWindows(e.ExePath)
 	default:
-		exec.Command("xdg-open", filepath.Dir(e.ExePath)).Start()
+		err = exec.Command("xdg-open", filepath.Dir(e.ExePath)).Start()
+	}
+	if err != nil {
+		dialog.ShowError(fmt.Errorf("打开位置失败: %w", err), pv.win)
 	}
 }
 
