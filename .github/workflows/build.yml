@@ -184,7 +184,11 @@ jobs:
       - uses: actions/setup-go@v5
         with: { go-version: "1.26" }
 
-      - run: sudo apt-get update -qq && sudo apt-get install -y gcc-mingw-w64-x86-64 imagemagick
+      - name: Install mingw-w64 + imagemagick
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc-mingw-w64-x86-64 imagemagick
 
       - name: Generate icon resource (.syso)
         run: |
