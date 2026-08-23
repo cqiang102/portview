@@ -5,8 +5,8 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -186,14 +186,14 @@ func killProcessWindows(pid int) error {
 }
 
 // openFileWindows 在 Windows 上打开文件所在位置并选中该文件。
-// 使用 cmd /c start 通过命令解释器处理路径（含空格也能正常工作）。
+// 直接调用 explorer（GUI 应用），无需 cmd 封装，不会弹出控制台窗口。
 func openFileWindows(path string) error {
-	// 先检查路径是否存在
-	if _, err := os.Stat(path); err != nil {
-		return fmt.Errorf("文件不存在: %s", path)
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
 	}
-	// cmd /c start "" explorer /select,"path"
-	return exec.Command("cmd", "/c", "start", "", "explorer", "/select,\""+path+"\"").Start()
+	// explorer /select,path — explorer 是 GUI 进程，不会弹出控制台
+	return exec.Command("explorer", "/select,"+abs).Start()
 }
 
 // readProcessWindows 通过 tasklist 获取 Windows 进程详情
