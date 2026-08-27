@@ -4,6 +4,12 @@
 
 > 🤖 Vibe Coding — 全程由 DeepSeek 辅助编码
 
+## 截图
+
+| macOS | Windows |
+|-------|---------|
+| ![macOS](macos.png) | ![windows](windows.png) |
+
 ## 功能
 
 - 扫描 0–65535 端口，识别 TCP/UDP 占用进程
