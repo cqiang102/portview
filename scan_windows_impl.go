@@ -22,7 +22,7 @@ type windowsProcInfo struct {
 	memMB   float64
 }
 
-// getPortsWindows Windows 版本：使用 netstat -ano 扫描监听端口
+// getPortsWindows Windows 版本：使用 netstat -ano 扫描 TCP/UDP socket
 func getPortsWindows() ([]PortEntry, error) {
 	raw, err := execCmdWindows("netstat", "-ano")
 	if err != nil {
@@ -32,14 +32,14 @@ func getPortsWindows() ([]PortEntry, error) {
 	procInfo := loadWindowsProcesses()
 	entries := parseNetstatOutput(raw, procInfo)
 
-	// 补全空闲端口
+	// 补全未观测到占用的端口
 	seen := make(map[int]bool)
 	for _, e := range entries {
 		seen[e.Port] = true
 	}
 	for p := 0; p <= 65535; p++ {
 		if !seen[p] {
-			entries = append(entries, PortEntry{Port: p, Status: "空闲"})
+			entries = append(entries, PortEntry{Port: p, Status: unobservedStatus})
 		}
 	}
 	return entries, nil
@@ -173,11 +173,7 @@ func getGPUWindows() string {
 	out, _ := execCmdWindows("nvidia-smi",
 		"--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
 		"--format=csv,noheader,nounits")
-	p := strings.Split(strings.TrimSpace(out), ", ")
-	if len(p) < 3 {
-		return ""
-	}
-	return fmt.Sprintf("GPU: %s%% | %s/%s MB | %s°C", p[0], p[1], p[2], p[3])
+	return formatGPU(out)
 }
 
 // killProcessWindows Windows 版终止进程（隐藏控制台窗口）

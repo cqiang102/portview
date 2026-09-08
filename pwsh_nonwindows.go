@@ -12,13 +12,13 @@ import (
 
 // powershellOut 非 Windows 平台不存在 powershell，仅为保持包可编译而提供占位实现。
 func powershellOut(script string) (string, error) {
-	out, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).Output()
+	out, err := commandOutput("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
 	return strings.TrimSpace(string(out)), err
 }
 
 // execCmdWindows 在非 Windows 平台上就是普通 exec（无需隐藏窗口）
 func execCmdWindows(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).Output()
+	out, err := commandOutput(name, args...)
 	return string(out), err
 }
 

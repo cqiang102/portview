@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -264,7 +265,7 @@ func TestMatchAny_Empty(t *testing.T) {
 // ---------- PortMetaStore ----------
 
 func TestMetaStore_DefaultGroups(t *testing.T) {
-	store := &PortMetaStore{path: "/tmp/test_portview.json"}
+	store := &PortMetaStore{path: filepath.Join(t.TempDir(), "test_portview.json")}
 	store.load()
 
 	if len(store.data.CustomGroups) == 0 {
@@ -277,19 +278,25 @@ func TestMetaStore_DefaultGroups(t *testing.T) {
 			found = true
 			has80 := false
 			for _, p := range g.Ports {
-				if p == 80 { has80 = true; break }
+				if p == 80 {
+					has80 = true
+					break
+				}
 			}
-			if !has80 { t.Error("Web服务分组应包含端口 80") }
+			if !has80 {
+				t.Error("Web服务分组应包含端口 80")
+			}
 			break
 		}
 	}
-	if !found { t.Error("未找到 Web服务 默认分组") }
+	if !found {
+		t.Error("未找到 Web服务 默认分组")
+	}
 
-	os.Remove("/tmp/test_portview.json")
 }
 
 func TestMetaStore_SetAndGet(t *testing.T) {
-	store := &PortMetaStore{path: "/tmp/test_portview2.json"}
+	store := &PortMetaStore{path: filepath.Join(t.TempDir(), "test_portview2.json")}
 	store.load()
 
 	store.Set(8080, PortMeta{Note: "测试服务", Group: "自定义"})
@@ -298,28 +305,29 @@ func TestMetaStore_SetAndGet(t *testing.T) {
 		t.Errorf("Set/Get 失败: %+v", m)
 	}
 
-	os.Remove("/tmp/test_portview2.json")
 }
 
 func TestMetaStore_PortBelongsToCustom(t *testing.T) {
-	store := &PortMetaStore{path: "/tmp/test_portview3.json"}
+	store := &PortMetaStore{path: filepath.Join(t.TempDir(), "test_portview3.json")}
 	store.load()
 
 	// Web 服务包含端口 80
 	groups := store.PortBelongsToCustom(80)
 	found := false
 	for _, g := range groups {
-		if g == "🌐 Web服务" { found = true; break }
+		if g == "🌐 Web服务" {
+			found = true
+			break
+		}
 	}
 	if !found {
 		t.Errorf("端口 80 应属于 Web服务，得到: %v", groups)
 	}
 
-	os.Remove("/tmp/test_portview3.json")
 }
 
 func TestMetaStore_Reset(t *testing.T) {
-	store := &PortMetaStore{path: "/tmp/test_portview4.json"}
+	store := &PortMetaStore{path: filepath.Join(t.TempDir(), "test_portview4.json")}
 	store.load()
 	store.Set(9999, PortMeta{Note: "临时"})
 	store.ResetAll()
@@ -332,11 +340,10 @@ func TestMetaStore_Reset(t *testing.T) {
 		t.Error("重置后应有默认分组")
 	}
 
-	os.Remove("/tmp/test_portview4.json")
 }
 
 func TestMetaStore_ConcurrentGetSet(t *testing.T) {
-	store := &PortMetaStore{path: "/tmp/test_portview_conc.json"}
+	store := &PortMetaStore{path: filepath.Join(t.TempDir(), "test_portview_conc.json")}
 	store.load()
 
 	done := make(chan bool)
@@ -351,7 +358,6 @@ func TestMetaStore_ConcurrentGetSet(t *testing.T) {
 		<-done
 	}
 
-	os.Remove("/tmp/test_portview_conc.json")
 }
 
 // ---------- atoi ----------
@@ -493,7 +499,7 @@ func TestParseLsofDarwin_Empty(t *testing.T) {
 // ---------- PortMetaStore.save ----------
 
 func TestMetaStore_SaveAtomic(t *testing.T) {
-	path := "/tmp/test_portview_save.json"
+	path := filepath.Join(t.TempDir(), "test_portview_save.json")
 	os.Remove(path)
 	defer os.Remove(path)
 	defer os.Remove(path + ".tmp")

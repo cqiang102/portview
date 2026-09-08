@@ -17,7 +17,7 @@ import (
 type PortEntry struct {
 	Port        int     // 端口号 0-65535
 	Protocol    string  // 协议：tcp/tcp6/udp/udp6
-	PID         int     // 占用进程 PID，0 表示空闲
+	PID         int     // 占用进程 PID，0 表示进程信息不可用
 	ProcessName string  // 进程名
 	Status      string  // 连接状态：LISTEN/ESTABLISHED/空闲
 	MemoryMB    float64 // 进程 RSS 内存（MB）
@@ -27,7 +27,7 @@ type PortEntry struct {
 
 func (e *PortEntry) SysGroup() string {
 	// 被占用端口按端口号分类
-	if e.PID > 0 {
+	if e.Occupied() {
 		switch {
 		case e.Port == 22:
 			return "SSH"
@@ -136,3 +136,10 @@ func fmtPort(p int) string {
 	}
 	return strconv.Itoa(p)
 }
+
+// Occupied distinguishes observed sockets from synthetic, unobserved port rows.
+func (e PortEntry) Occupied() bool {
+	return e.PID > 0 || e.Protocol == "tcp" || e.Protocol == "tcp6" || e.Protocol == "udp" || e.Protocol == "udp6"
+}
+
+const unobservedStatus = "未观测到占用"

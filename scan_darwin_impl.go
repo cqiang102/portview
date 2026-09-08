@@ -21,15 +21,18 @@ type darwinProcInfo struct {
 	memMB   float64
 }
 
-// getPortsDarwin macOS 版本：使用 lsof 扫描监听端口（TCP + UDP）
+// getPortsDarwin macOS 版本：使用 lsof 扫描 TCP/UDP socket（TCP + UDP）
 func getPortsDarwin() ([]PortEntry, error) {
 	// -n -P 避免 DNS 反查和端口名转换
-	// TCP 只取 LISTEN 状态；UDP 无状态过滤，直接列出全部 UDP socket
-	rawTCP, errTCP := execCmd("lsof", "-iTCP", "-sTCP:LISTEN", "-n", "-P")
+	// TCP/UDP 均包含监听和已连接 socket，与 Linux/Windows 保持一致。
+	rawTCP, errTCP := execCmd("lsof", "-iTCP", "-n", "-P")
 	rawUDP, errUDP := execCmd("lsof", "-iUDP", "-n", "-P")
-	// lsof 没有匹配项时返回 exit 1，所以仅在两个命令都无输出时视为失败
-	if (errTCP != nil && rawTCP == "") && (errUDP != nil && rawUDP == "") {
-		return nil, fmt.Errorf("lsof 失败: %w", errTCP)
+	// lsof exit 1 with no stderr means no matching sockets, not a scan failure.
+	if err := lsofError(errTCP); err != nil {
+		return nil, err
+	}
+	if err := lsofError(errUDP); err != nil {
+		return nil, err
 	}
 
 	seen := make(map[int]bool)
@@ -39,10 +42,10 @@ func getPortsDarwin() ([]PortEntry, error) {
 	parseLsofDarwin(rawTCP, "tcp", seen, &entries, cache)
 	parseLsofDarwin(rawUDP, "udp", seen, &entries, cache)
 
-	// 补全空闲端口
+	// 补全未观测到占用的端口
 	for p := 0; p <= 65535; p++ {
 		if !seen[p] {
-			entries = append(entries, PortEntry{Port: p, Status: "空闲"})
+			entries = append(entries, PortEntry{Port: p, Status: unobservedStatus})
 		}
 	}
 	return entries, nil
@@ -66,7 +69,7 @@ func parseLsofDarwin(raw, baseProto string, seen map[int]bool, entries *[]PortEn
 		}
 		// f[0]=COMMAND, f[1]=PID, f[8]=NAME
 		pid := atoi(f[1])
-		nameField := f[8] // e.g. "*:8080" 或 "127.0.0.1:3000"
+		nameField, _, _ := strings.Cut(f[8], "->") // e.g. "*:8080" 或 "127.0.0.1:3000"
 
 		// 提取端口号：取最后一个 : 之后的部分
 		idx := strings.LastIndex(nameField, ":")
@@ -91,10 +94,17 @@ func parseLsofDarwin(raw, baseProto string, seen map[int]bool, entries *[]PortEn
 			proto = baseProto + "6"
 		}
 
-		// 状态：TCP 为 LISTEN，UDP 为 UNCONN（与 Linux ss 输出保持一致）
+		// TCP 从尾列读取连接状态；UDP 根据是否带远端地址区分连接状态。
 		status := "LISTEN"
 		if baseProto == "udp" {
 			status = "UNCONN"
+			if strings.Contains(f[8], "->") {
+				status = "CONNECTED"
+			}
+		}
+
+		if baseProto == "tcp" && len(f) > 9 {
+			status = strings.Trim(f[9], "()")
 		}
 
 		// 读取 exe 路径与 RSS 内存（按 PID 缓存，避免重复调用 ps/lsof -p）
@@ -118,7 +128,7 @@ func parseLsofDarwin(raw, baseProto string, seen map[int]bool, entries *[]PortEn
 
 // getProcessMemDarwin 通过 ps 获取进程 RSS 内存（MB）
 func getProcessMemDarwin(pid int) float64 {
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "rss=").Output()
+	out, err := commandOutput("ps", "-p", strconv.Itoa(pid), "-o", "rss=")
 	if err != nil {
 		return 0
 	}
@@ -129,7 +139,7 @@ func getProcessMemDarwin(pid int) float64 {
 
 // getExePathDarwin 通过 lsof -d txt 获取可执行文件完整路径
 func getExePathDarwin(pid int) string {
-	out, err := exec.Command("lsof", "-p", strconv.Itoa(pid), "-a", "-d", "txt", "-Fn").Output()
+	out, err := commandOutput("lsof", "-p", strconv.Itoa(pid), "-a", "-d", "txt", "-Fn")
 	if err != nil {
 		return ""
 	}
@@ -143,8 +153,8 @@ func getExePathDarwin(pid int) string {
 
 // readProcessDarwin 通过 ps 获取 macOS 进程详情
 func readProcessDarwin(pid int) string {
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid),
-		"-o", "state=", "-o", "%cpu=", "-o", "rss=", "-o", "nice=").Output()
+	out, err := commandOutput("ps", "-p", strconv.Itoa(pid),
+		"-o", "state=", "-o", "%cpu=", "-o", "rss=", "-o", "nice=")
 	if err != nil {
 		return "状态: 已结束或无权限"
 	}
@@ -172,7 +182,7 @@ func readProcessDarwin(pid int) string {
 
 // readCmdlineDarwin 通过 ps 获取 macOS 进程命令行
 func readCmdlineDarwin(pid int) string {
-	out, _ := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output()
+	out, _ := commandOutput("ps", "-p", strconv.Itoa(pid), "-o", "args=")
 	return strings.TrimSpace(string(out))
 }
 
@@ -182,7 +192,7 @@ func readCmdlineDarwin(pid int) string {
 
 // getCPUDarwin 通过 top 读取 CPU 使用率
 func getCPUDarwin() string {
-	out, err := exec.Command("top", "-l", "1", "-n", "0").Output()
+	out, err := commandOutput("top", "-l", "1", "-n", "0")
 	if err != nil {
 		return "N/A"
 	}
@@ -197,7 +207,7 @@ func getCPUDarwin() string {
 
 // getMemDarwin macOS 版内存信息，通过 sysctl + vm_stat 获取
 func getMemDarwin() string {
-	totalOut, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
+	totalOut, err := commandOutput("sysctl", "-n", "hw.memsize")
 	if err != nil {
 		return "N/A"
 	}
@@ -206,7 +216,7 @@ func getMemDarwin() string {
 		return "N/A"
 	}
 
-	vmOut, err := exec.Command("vm_stat").Output()
+	vmOut, err := commandOutput("vm_stat")
 	if err != nil {
 		return "N/A"
 	}
@@ -233,4 +243,14 @@ func getMemDarwin() string {
 	_ = freePages
 
 	return fmt.Sprintf("%.1f%% (%.1f/%.0f GB)", pct, usedGB, totalGB)
+}
+
+func lsofError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if e, ok := err.(*exec.ExitError); ok && e.ExitCode() == 1 && len(e.Stderr) == 0 {
+		return nil
+	}
+	return fmt.Errorf("lsof 失败: %w", err)
 }

@@ -15,32 +15,32 @@ import (
 // Linux 端口扫描（ss + /proc）
 // ============================================================
 
-// getPortsLinux 调用 ss -tulnp 扫描所有监听端口，补全空闲端口
+// getPortsLinux 调用 ss -taunp 扫描所有 TCP/UDP socket，补全未观测到占用的端口
 func getPortsLinux() ([]PortEntry, error) {
-	raw, err := execCmd("ss", "-tulnp")
+	raw, err := execCmd("ss", "-taunp")
 	if err != nil {
 		return nil, fmt.Errorf("ss 失败: %w", err)
 	}
 	entries := parseSSOutput(raw)
 
-	// 补全未出现在 ss 输出中的空闲端口
+	// 补全未出现在 ss 输出中的未观测到占用的端口
 	seen := make(map[int]bool)
 	for _, e := range entries {
 		seen[e.Port] = true
 	}
 	for p := 0; p <= 65535; p++ {
 		if !seen[p] {
-			entries = append(entries, PortEntry{Port: p, Status: "空闲"})
+			entries = append(entries, PortEntry{Port: p, Status: unobservedStatus})
 		}
 	}
 	return entries, nil
 }
 
-// parseSSOutput 解析 ss -tulnp 输出，返回监听端口条目
+// parseSSOutput 解析 ss -taunp 输出，返回 socket 条目
 func parseSSOutput(raw string) []PortEntry {
 	entries := make([]PortEntry, 0, 100)
 	// 解析 ss 输出：提取进程名和 PID
-	re := regexp.MustCompile(`"([^"]+)".*pid=(\d+)`)
+	re := regexp.MustCompile(`"([^"]+)",pid=(\d+)`)
 	pageSize := os.Getpagesize()
 
 	for _, line := range strings.Split(raw, "\n") {

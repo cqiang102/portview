@@ -16,8 +16,8 @@ import (
 // ============================================================
 
 type PortMeta struct {
-	Group string `json:"group"` // 所属自定义分组名
-	Note  string `json:"note"`  // 备注文本，最长 100 字符
+	Group string `json:"group,omitempty"` // 仅用于兼容旧版，运行时归属由 CustomGroups.Ports 管理
+	Note  string `json:"note"`            // 备注文本，最长 100 字符
 }
 
 type CustomGroup struct {
@@ -47,84 +47,263 @@ type PortMetaStore struct {
 	path string       // JSON 文件路径
 }
 
-func (s *PortMetaStore) load() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.data = StoreData{}
-	d, err := os.ReadFile(s.path)
-	if err != nil {
-		// 首次使用，创建默认分组
-		s.data.CustomGroups = defaultGroups()
-		s.data.PortNotes = make(map[int]PortMeta)
-		_ = s.save()
-		return
-	}
-	// 尝试新格式（含 CustomGroups）
-	if err := json.Unmarshal(d, &s.data); err != nil {
-		// 旧格式兼容：仅有 port→PortMeta 的 map
-		old := make(map[int]PortMeta)
-		if err2 := json.Unmarshal(d, &old); err2 == nil {
-			s.data.PortNotes = old
+// configPath retains existing installations; new installs use the OS config directory.
+func configPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		legacy := filepath.Join(home, ".portview", "notes.json")
+		if _, err := os.Stat(legacy); err == nil {
+			return legacy, nil
+		} else if !os.IsNotExist(err) {
+			return "", err
 		}
-		s.data.CustomGroups = defaultGroups()
 	}
-	if s.data.PortNotes == nil {
-		s.data.PortNotes = make(map[int]PortMeta)
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("读取配置目录失败: %w", err)
 	}
+	return filepath.Join(dir, "PortView", "notes.json"), nil
 }
 
-func (s *PortMetaStore) save() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
-		return fmt.Errorf("创建配置目录失败: %w", err)
+func (s *PortMetaStore) load() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data = StoreData{CustomGroups: defaultGroups(), PortNotes: make(map[int]PortMeta)}
+	raw, err := os.ReadFile(s.path)
+	if os.IsNotExist(err) {
+		return s.saveLocked(s.data)
 	}
-	d, err := json.MarshalIndent(s.data, "", "  ")
 	if err != nil {
-		return fmt.Errorf("序列化配置失败: %w", err)
+		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, d, 0644); err != nil {
-		return fmt.Errorf("写入临时配置失败: %w", err)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return fmt.Errorf("配置格式错误: %w", err)
 	}
-	if err := os.Rename(tmp, s.path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("保存配置失败: %w", err)
+	if fields == nil {
+		return fmt.Errorf("配置必须为 JSON 对象")
 	}
+	_, hasGroups := fields["custom_groups"]
+	_, hasNotes := fields["port_notes"]
+	data := StoreData{}
+	if hasGroups || hasNotes {
+		if err := json.Unmarshal(raw, &data); err != nil {
+			return err
+		}
+	} else {
+		data.CustomGroups = defaultGroups()
+		if err := json.Unmarshal(raw, &data.PortNotes); err != nil {
+			return err
+		}
+	}
+	if data.PortNotes == nil {
+		data.PortNotes = make(map[int]PortMeta)
+	}
+	// Merge duplicate legacy names, and migrate legacy per-port assignments once.
+	groups := []CustomGroup{}
+	for _, g := range data.CustomGroups {
+		found := false
+		for i := range groups {
+			if groups[i].Name == g.Name {
+				groups[i].Ports = uniquePorts(append(groups[i].Ports, g.Ports...))
+				found = true
+				break
+			}
+		}
+		if !found {
+			g.Ports = uniquePorts(g.Ports)
+			groups = append(groups, g)
+		}
+	}
+	data.CustomGroups = groups
+	for port, m := range data.PortNotes {
+		if m.Group == "" {
+			continue
+		}
+		i := groupIndex(data, m.Group)
+		if i < 0 {
+			data.CustomGroups = append(data.CustomGroups, CustomGroup{Name: m.Group})
+			i = len(data.CustomGroups) - 1
+		}
+		data.CustomGroups[i].Ports = uniquePorts(append(data.CustomGroups[i].Ports, port))
+		m.Group = ""
+		data.PortNotes[port] = m
+	}
+	s.data = data
 	return nil
 }
 
+func (s *PortMetaStore) save() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked(s.data)
+}
+func (s *PortMetaStore) saveLocked(data StoreData) error {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(s.path), ".notes-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(raw); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), s.path)
+}
+
+func cloneData(data StoreData) StoreData {
+	out := StoreData{PortNotes: make(map[int]PortMeta), CustomGroups: nil}
+	for k, v := range data.PortNotes {
+		out.PortNotes[k] = v
+	}
+	out.CustomGroups = cloneGroups(data.CustomGroups)
+	return out
+}
+
+// update commits memory only after persistence succeeds.
+func (s *PortMetaStore) update(fn func(*StoreData) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := cloneData(s.data)
+	if err := fn(&next); err != nil {
+		return err
+	}
+	if err := s.saveLocked(next); err != nil {
+		return err
+	}
+	s.data = next
+	return nil
+}
+func (s *PortMetaStore) Groups() []CustomGroup {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneGroups(s.data.CustomGroups)
+}
 func (s *PortMetaStore) Get(port int) PortMeta {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.data.PortNotes[port]
 }
-
 func (s *PortMetaStore) Set(port int, m PortMeta) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.data.PortNotes[port] = m
 }
-
 func (s *PortMetaStore) PortBelongsToCustom(port int) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var out []string
+	var names []string
 	for _, g := range s.data.CustomGroups {
 		for _, p := range g.Ports {
 			if p == port {
-				out = append(out, g.Name)
+				names = append(names, g.Name)
 				break
 			}
 		}
 	}
-	return out
+	return names
+}
+func groupIndex(data StoreData, name string) int {
+	for i, g := range data.CustomGroups {
+		if g.Name == name {
+			return i
+		}
+	}
+	return -1
+}
+func (s *PortMetaStore) SaveGroup(oldName string, g CustomGroup) error {
+	return s.update(func(d *StoreData) error {
+		if g.Name == "" {
+			return fmt.Errorf("分组名称不能为空")
+		}
+		idx := groupIndex(*d, oldName)
+		if oldName != "" && idx < 0 {
+			return fmt.Errorf("分组已不存在，请重新打开")
+		}
+		if other := groupIndex(*d, g.Name); other >= 0 && other != idx {
+			return fmt.Errorf("分组名称已存在")
+		}
+		for _, p := range g.Ports {
+			if p < 1 || p > 65535 {
+				return fmt.Errorf("端口必须在 1–65535 之间")
+			}
+		}
+		g.Ports = uniquePorts(g.Ports)
+		if idx < 0 {
+			d.CustomGroups = append(d.CustomGroups, g)
+		} else {
+			d.CustomGroups[idx] = g
+		}
+		return nil
+	})
+}
+func (s *PortMetaStore) DeleteGroup(name string) error {
+	return s.update(func(d *StoreData) error {
+		idx := groupIndex(*d, name)
+		if idx < 0 {
+			return fmt.Errorf("分组已不存在")
+		}
+		d.CustomGroups = append(d.CustomGroups[:idx], d.CustomGroups[idx+1:]...)
+		return nil
+	})
+}
+func (s *PortMetaStore) SaveNote(port int, note string, names []string) error {
+	return s.update(func(d *StoreData) error {
+		if port < 0 || port > 65535 {
+			return fmt.Errorf("无效端口: %d", port)
+		}
+		if len([]rune(note)) > maxNoteLen {
+			return fmt.Errorf("备注最多 %d 个字符", maxNoteLen)
+		}
+		for _, name := range names {
+			if groupIndex(*d, name) < 0 {
+				return fmt.Errorf("分组 %s 已不存在", name)
+			}
+		}
+		for i, g := range d.CustomGroups {
+			ports := []int{}
+			for _, p := range g.Ports {
+				if p != port {
+					ports = append(ports, p)
+				}
+			}
+			for _, name := range names {
+				if name == g.Name {
+					ports = append(ports, port)
+					break
+				}
+			}
+			d.CustomGroups[i].Ports = uniquePorts(ports)
+		}
+		d.PortNotes[port] = PortMeta{Note: note}
+		return nil
+	})
+}
+func (s *PortMetaStore) ResetAll() error {
+	return s.update(func(d *StoreData) error {
+		*d = StoreData{CustomGroups: defaultGroups(), PortNotes: make(map[int]PortMeta)}
+		return nil
+	})
 }
 
-func (s *PortMetaStore) ResetAll() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.data = StoreData{
-		CustomGroups: defaultGroups(),
-		PortNotes:    make(map[int]PortMeta),
+func cloneGroups(groups []CustomGroup) []CustomGroup {
+	out := make([]CustomGroup, len(groups))
+	for i, g := range groups {
+		out[i] = CustomGroup{Name: g.Name, Ports: append([]int(nil), g.Ports...)}
 	}
-	return s.save()
+	return out
 }

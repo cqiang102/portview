@@ -4,11 +4,14 @@
 package main
 
 import (
+	"context"
+	"encoding/csv"
 	"fmt"
 	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ============================================================
@@ -42,14 +45,10 @@ func getGPU() string {
 	if runtime.GOOS == "windows" {
 		return getGPUWindows()
 	}
-	out, _ := exec.Command("nvidia-smi",
+	out, _ := commandOutput("nvidia-smi",
 		"--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
-		"--format=csv,noheader,nounits").Output()
-	p := strings.Split(strings.TrimSpace(string(out)), ", ")
-	if len(p) < 3 {
-		return ""
-	}
-	return fmt.Sprintf("GPU: %s%% | %s/%s MB | %s°C", p[0], p[1], p[2], p[3])
+		"--format=csv,noheader,nounits")
+	return formatGPU(string(out))
 }
 
 // ============================================================
@@ -72,9 +71,9 @@ func readProcessGPU(pid int) string {
 	if runtime.GOOS == "windows" {
 		return readProcessGPUWindows(pid)
 	}
-	out, _ := exec.Command("nvidia-smi",
+	out, _ := commandOutput("nvidia-smi",
 		"--query-compute-apps=pid,used_memory,name",
-		"--format=csv,noheader,nounits").Output()
+		"--format=csv,noheader,nounits")
 	ps := strconv.Itoa(pid)
 	for _, line := range strings.Split(string(out), "\n") {
 		if !strings.HasPrefix(line, ps+",") {
@@ -117,14 +116,42 @@ func getPorts() ([]PortEntry, error) {
 
 // execCmd 执行命令并返回 stdout
 func execCmd(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).Output()
+	out, err := commandOutput(name, args...)
 	return string(out), err
 }
 
 // killProcess 终止指定进程：Windows 用 taskkill，Linux/macOS 用 kill -9
 func killProcess(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("无效 PID: %d", pid)
+	}
 	if runtime.GOOS == "windows" {
 		return killProcessWindows(pid)
 	}
 	return exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
+}
+
+func commandOutput(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = time.Second
+	return cmd.Output()
+}
+func formatGPU(raw string) string {
+	reader := csv.NewReader(strings.NewReader(raw))
+	reader.TrimLeadingSpace = true
+	reader.FieldsPerRecord = -1
+	rows, err := reader.ReadAll()
+	if err != nil {
+		return ""
+	}
+	var out []string
+	for _, p := range rows {
+		if len(p) != 4 {
+			continue
+		}
+		out = append(out, fmt.Sprintf("GPU: %s%% | %s/%s MB | %s°C", p[0], p[1], p[2], p[3]))
+	}
+	return strings.Join(out, " | ")
 }
