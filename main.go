@@ -30,5 +30,7 @@ func main() {
 	pv.buildUI()
 	w.SetOnClosed(func() { pv.closed = true })
 	pv.refresh()
+	// 延迟在后台检查更新，不阻塞首屏；可在更新弹窗中关闭。
+	pv.startAutoUpdateCheck()
 	w.ShowAndRun()
 }

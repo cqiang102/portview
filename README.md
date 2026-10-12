@@ -18,6 +18,7 @@
 - 自定义分组管理，端口备注持久化
 - 按端口排序、按占用状态/协议筛选
 - 关键词搜索（端口号 / PID / 进程名）
+- 更新检查：启动后后台查询一次 GitHub Release，发现新版本时提示并一键打开下载页（可在弹窗中关闭自动检查）
 
 ## 安装
 
@@ -98,6 +99,8 @@ Apache 2.0 © lacia.cq@qq.com
 - “位置”：macOS 用 `open -R`、Windows 用 `explorer /select` 定位并选中可执行文件（Windows 路径含逗号时退化为打开所在目录），Linux 打开所在目录。
 - Linux 与 macOS 的协议列均区分 IPv6（`tcp6`/`udp6`）；内存占用按系统实际页大小计算（Apple Silicon 16KB、Intel Mac 4KB）。
 - 分组支持多选，备注窗口与分组管理共用同一份端口归属数据。
+- 更新检查只访问 GitHub Releases API（无遥测）：启动后延迟 3 秒在后台查询一次，网络失败静默忽略；手动点「检查更新」才会提示失败原因。同一个新版本只主动提示一次，可在更新弹窗中关闭自动检查。
+- 更新只做「检查 + 打开下载页」，不下载、不替换程序文件，安装仍由用户按各自平台的方式完成。
 - 已有的 `~/.portview/notes.json` 会继续使用；新安装使用系统用户配置目录下的 `PortView/notes.json`（macOS 为 `~/Library/Application Support/PortView/notes.json`，Windows 为 `%AppData%/PortView/notes.json`，Linux 为 `$XDG_CONFIG_HOME/PortView/notes.json`，默认 `~/.config/PortView/notes.json`）。旧版 JSON 备注格式会自动迁移。
 
 ## 代码结构与验证
@@ -107,7 +110,8 @@ Apache 2.0 © lacia.cq@qq.com
 - `ui.go`：主界面构建；`groups_ui.go`、`notes_ui.go`、`process_ui.go`：分组、备注和进程交互。
 - `filter.go`、`model.go`：独立于 GUI 的筛选、排序与端口模型。
 - `scan*.go`、`pwsh*.go`：平台采集和命令执行；`store.go`：配置迁移与事务式保存。
-- `main_test.go`、`regressions_test.go`、`fixes_test.go`：解析、存储、回归与修复验证。
+- `update.go`、`update_ui.go`：版本解析/比较、GitHub Release 查询与更新提示界面。
+- `main_test.go`、`regressions_test.go`、`fixes_test.go`、`update_test.go`：解析、存储、回归与更新检查验证。
 
 ```bash
 go test -race -cover ./...

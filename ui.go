@@ -133,6 +133,9 @@ func (pv *PortViewer) buildUI() {
 	groupBtn := widget.NewButtonWithIcon("分组管理", theme.SettingsIcon(), func() {
 		safeDo(pv, pv.manageGroups)
 	})
+	pv.updateBtn = widget.NewButtonWithIcon("检查更新", theme.DownloadIcon(), func() {
+		safeDo(pv, pv.checkUpdateManual)
+	})
 
 	// 分组下拉筛选 + 搜索框
 	pv.groupSel = widget.NewSelect([]string{"🏷️ 全部"}, func(string) {})
@@ -154,16 +157,20 @@ func (pv *PortViewer) buildUI() {
 	pv.sysInfo.TextStyle.Monospace = true
 	pv.status = widget.NewLabel("就绪 — 点击「刷新」")
 	pv.status.TextStyle.Italic = true
+	pv.version = widget.NewLabel(versionText())
+	pv.version.TextStyle.Monospace = true
 
 	// ---- 布局 ----
 	btnRow := container.NewHBox(refreshBtn, detailBtn, killBtn, openBtn, noteBtn, groupBtn,
-		widget.NewSeparator(), pv.groupSel, widget.NewSeparator())
+		widget.NewSeparator(), pv.updateBtn, widget.NewSeparator(), pv.groupSel, widget.NewSeparator())
 	topBar := container.NewBorder(nil, nil, btnRow, nil, pv.searchBox)
 	btnRow2 := container.NewHBox(sortPortBtn, sortOccBtn)
 
+	// 底部：状态栏左对齐，版本标签右对齐
+	bottomBar := container.NewBorder(nil, nil, nil, pv.version, pv.status)
 	content := container.NewBorder(
 		container.NewVBox(topBar, btnRow2, widget.NewSeparator()),       // 顶部
-		container.NewVBox(pv.sysInfo, widget.NewSeparator(), pv.status), // 底部
+		container.NewVBox(pv.sysInfo, widget.NewSeparator(), bottomBar), // 底部
 		nil, nil,
 		container.NewPadded(pv.table), // 中央
 	)

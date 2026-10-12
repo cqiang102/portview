@@ -25,12 +25,15 @@ type PortViewer struct {
 	closed         bool
 	occupiedFirst  bool
 	groupDialog    dialog.Dialog
+	updateChecking bool
 
 	entries   []PortEntry    // socket 条目及未观测到占用的端口
 	filtered  []PortEntry    // 过滤/排序后的展示数据
 	table     *widget.Table  // 端口列表表格
 	status    *widget.Label  // 底部状态栏
 	sysInfo   *widget.Label  // 系统信息（CPU/内存/GPU）
+	version   *widget.Label  // 底部版本标签（兼作更新提示）
+	updateBtn *widget.Button // 顶部"检查更新"按钮
 	win       fyne.Window    // 主窗口
 	selRow    int            // 当前选中行（-1 = 未选中）
 	meta      *PortMetaStore // 持久化存储

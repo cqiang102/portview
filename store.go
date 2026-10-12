@@ -28,6 +28,10 @@ type CustomGroup struct {
 type StoreData struct {
 	CustomGroups []CustomGroup    `json:"custom_groups"` // 自定义分组列表
 	PortNotes    map[int]PortMeta `json:"port_notes"`    // 端口→备注映射
+	// AutoCheckUpdate 为 nil 表示使用默认值（true），因此用指针区分"未设置"和"显式关闭"。
+	AutoCheckUpdate *bool `json:"auto_check_update,omitempty"`
+	// NotifiedVersion 记录已主动提示过的新版本，避免每次启动重复弹窗。
+	NotifiedVersion string `json:"notified_version,omitempty"`
 }
 
 func defaultGroups() []CustomGroup {
@@ -85,8 +89,10 @@ func (s *PortMetaStore) load() error {
 	}
 	_, hasGroups := fields["custom_groups"]
 	_, hasNotes := fields["port_notes"]
+	_, hasAutoCheck := fields["auto_check_update"]
+	_, hasNotified := fields["notified_version"]
 	data := StoreData{}
-	if hasGroups || hasNotes {
+	if hasGroups || hasNotes || hasAutoCheck || hasNotified {
 		if err := json.Unmarshal(raw, &data); err != nil {
 			return err
 		}
@@ -171,6 +177,12 @@ func cloneData(data StoreData) StoreData {
 		out.PortNotes[k] = v
 	}
 	out.CustomGroups = cloneGroups(data.CustomGroups)
+	// 设置项必须一并克隆，否则 update() 提交后会被悄悄清空。
+	if data.AutoCheckUpdate != nil {
+		v := *data.AutoCheckUpdate
+		out.AutoCheckUpdate = &v
+	}
+	out.NotifiedVersion = data.NotifiedVersion
 	return out
 }
 
@@ -298,7 +310,42 @@ func (s *PortMetaStore) SaveNote(port int, note string, names []string) error {
 }
 func (s *PortMetaStore) ResetAll() error {
 	return s.update(func(d *StoreData) error {
-		*d = StoreData{CustomGroups: defaultGroups(), PortNotes: make(map[int]PortMeta)}
+		// "重置为默认"只清除端口相关的分组与备注，保留更新检查设置。
+		*d = StoreData{
+			CustomGroups:    defaultGroups(),
+			PortNotes:       make(map[int]PortMeta),
+			AutoCheckUpdate: d.AutoCheckUpdate,
+			NotifiedVersion: d.NotifiedVersion,
+		}
+		return nil
+	})
+}
+
+// AutoCheckUpdate 返回是否在启动时自动检查更新；未设置过时默认开启。
+func (s *PortMetaStore) AutoCheckUpdate() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.data.AutoCheckUpdate == nil || *s.data.AutoCheckUpdate
+}
+
+func (s *PortMetaStore) SetAutoCheckUpdate(v bool) error {
+	return s.update(func(d *StoreData) error {
+		enabled := v
+		d.AutoCheckUpdate = &enabled
+		return nil
+	})
+}
+
+// NotifiedVersion 返回已经主动提示过的新版本号。
+func (s *PortMetaStore) NotifiedVersion() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.data.NotifiedVersion
+}
+
+func (s *PortMetaStore) SetNotifiedVersion(v string) error {
+	return s.update(func(d *StoreData) error {
+		d.NotifiedVersion = v
 		return nil
 	})
 }

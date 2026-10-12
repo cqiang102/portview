@@ -28,10 +28,6 @@ jobs:
         run: go test ./...
         env: { CGO_ENABLED: 1 }
 
-      - name: Build
-        run: go build -ldflags="-s -w" -o portview .
-        env: { CGO_ENABLED: 1 }
-
       - name: Resolve version
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -40,6 +36,10 @@ jobs:
             *) VERSION="1.0.0" ;;
           esac
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: go build -ldflags="-s -w -X main.buildVersion=${VERSION}" -o portview .
+        env: { CGO_ENABLED: 1 }
 
       - name: Package .deb + .rpm
         run: |
@@ -106,10 +106,6 @@ jobs:
         run: go test ./...
         env: { CGO_ENABLED: 1 }
 
-      - name: Build
-        run: go build -ldflags="-s -w" -o portview .
-        env: { CGO_ENABLED: 1 }
-
       - name: Resolve version
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -118,6 +114,10 @@ jobs:
             *) VERSION="1.0.0" ;;
           esac
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: go build -ldflags="-s -w -X main.buildVersion=${VERSION}" -o portview .
+        env: { CGO_ENABLED: 1 }
 
       - name: Package .dmg
         run: |
@@ -201,7 +201,17 @@ jobs:
           x86_64-w64-mingw32-windres portview.rc -o rsrc_windows_amd64.syso
           rm icon.ico portview.rc
 
-      - run: go build -ldflags="-s -w -H windowsgui" -o portview.exe .
+      - name: Resolve version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          case "$VERSION" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) VERSION="1.0.0" ;;
+          esac
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: go build -ldflags="-s -w -H windowsgui -X main.buildVersion=${VERSION}" -o portview.exe .
         env:
           CGO_ENABLED: 1
           CC: x86_64-w64-mingw32-gcc
