@@ -142,4 +142,51 @@ func (e PortEntry) Occupied() bool {
 	return e.PID > 0 || e.Protocol == "tcp" || e.Protocol == "tcp6" || e.Protocol == "udp" || e.Protocol == "udp6"
 }
 
+// PIDText/ProcessText/MemoryText 统一列表展示口径。
+// 已观测到占用但读不到 PID 的 socket（权限不足，或内核持有的 TIME-WAIT 等无主 socket）
+// 必须与"未观测到占用"区分开，不能整行显示成 "-"，否则会被误读为空闲端口。
+// 用词保持中性：这里读不到 PID 不等于一定是权限问题。
+func (e PortEntry) PIDText() string {
+	switch {
+	case e.PID > 0:
+		return strconv.Itoa(e.PID)
+	case e.Occupied():
+		return "未知"
+	default:
+		return "-"
+	}
+}
+
+func (e PortEntry) ProcessText() string {
+	switch {
+	case e.PID > 0:
+		return e.ProcessName
+	case e.Occupied():
+		return "进程未知"
+	default:
+		return "-"
+	}
+}
+
+func (e PortEntry) MemoryText() string {
+	if e.PID <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.1f MB", e.MemoryMB)
+}
+
+// customGroupPrefix 是分组筛选下拉框中自定义分组选项的统一前缀。
+// 选项文本与分组名的映射只在此处构造/解析，避免各处硬编码前缀导致筛选失效。
+const customGroupPrefix = "🔖 "
+
+func customGroupLabel(name string) string { return customGroupPrefix + name }
+
+func customGroupName(label string) (string, bool) {
+	name, ok := strings.CutPrefix(label, customGroupPrefix)
+	if !ok || name == "" {
+		return "", false
+	}
+	return name, true
+}
+
 const unobservedStatus = "未观测到占用"

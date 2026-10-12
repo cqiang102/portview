@@ -121,11 +121,12 @@ func (pv *PortViewer) openSelected() {
 		dialog.ShowInformation("提示", "无路径", pv.win)
 		return
 	}
-	// macOS 用 open，Windows 用 explorer，Linux 用 xdg-open
+	// macOS 用 open -R，Windows 用 explorer /select，Linux 用 xdg-open
 	var err error
 	switch runtime.GOOS {
 	case "darwin":
-		err = exec.Command("open", filepath.Dir(e.ExePath)).Start()
+		// open -R 在 Finder 中定位并选中该可执行文件，行为与 Windows 一致
+		err = exec.Command("open", "-R", e.ExePath).Start()
 	case "windows":
 		// explorer 是 GUI 应用，无需 HideWindow；路径用 ShellExecute 更可靠
 		err = openFileWindows(e.ExePath)

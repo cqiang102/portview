@@ -1,7 +1,7 @@
 [Details]
   ID = "PortView"
-  Version = "1.2.0"
-  Build = 1
+  Version = "1.2.1"
+  Build = 2
   Name = "端口查看器"
   Icon = "assets/portview.png"
 

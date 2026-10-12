@@ -9,6 +9,14 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
+)
+
+const (
+	// Linux USER_HZ：/proc/[pid]/stat 中 utime/stime 的时钟单位，主流内核为 100。
+	linuxClockTicks = 100.0
+	// cpuSampleInterval 两次采样之间的间隔：瞬时占用率必须用差值计算。
+	cpuSampleInterval = 200 * time.Millisecond
 )
 
 // ============================================================
@@ -97,12 +105,57 @@ func parseSSOutput(raw string) []PortEntry {
 		}
 
 		entries = append(entries, PortEntry{
-			Port: port, Protocol: f[0], PID: pid,
+			Port: port, Protocol: protoForAddr(f[0], addr), PID: pid,
 			ProcessName: pn, Status: f[1],
 			MemoryMB: memMB, ExePath: ep, LocalAddr: addr,
 		})
 	}
 	return entries
+}
+
+// protoForAddr 统一协议标签。ss 的 Netid 列对 IPv6 socket 仍可能显示 tcp/udp，
+// 因此按本地地址是否带 IPv6 前缀判断，与 macOS 实现保持一致（tcp/tcp6/udp/udp6）。
+func protoForAddr(netid, addr string) string {
+	proto := strings.ToLower(netid)
+	if proto != "tcp" && proto != "udp" {
+		return netid
+	}
+	if strings.HasPrefix(addr, "[") || strings.Contains(addr, "]:") {
+		return proto + "6"
+	}
+	return proto
+}
+
+// linuxProcStat 是 /proc/[pid]/stat 中本工具关心的字段。
+type linuxProcStat struct {
+	State    string
+	UTime    int
+	STime    int
+	Nice     int
+	Threads  int
+	RSSPages int
+}
+
+// parseProcStat 解析 /proc/[pid]/stat 内容。
+// comm（字段 2）被括号包裹且进程名可能包含空格与 ')'，因此从最后一个 ')' 之后开始
+// 按字段解析，避免进程名含空格导致后续字段整体错位。字段号 n 对应 rest[n-3]。
+func parseProcStat(raw string) (linuxProcStat, bool) {
+	var st linuxProcStat
+	i := strings.LastIndex(raw, ")")
+	if i < 0 {
+		return st, false
+	}
+	rest := strings.Fields(raw[i+1:])
+	if len(rest) < 22 {
+		return st, false
+	}
+	st.State = rest[0]           // 3 state
+	st.UTime = atoi(rest[11])    // 14 utime
+	st.STime = atoi(rest[12])    // 15 stime
+	st.Nice = atoi(rest[16])     // 19 nice
+	st.Threads = atoi(rest[17])  // 20 num_threads
+	st.RSSPages = atoi(rest[21]) // 24 rss
+	return st, true
 }
 
 // readProcessLinux 从 /proc/[pid]/stat 读取进程状态、CPU、内存
@@ -111,36 +164,34 @@ func readProcessLinux(pid int) string {
 	if err != nil {
 		return "状态: 已结束或无权限"
 	}
-	f := strings.Fields(string(d))
-	if len(f) < 24 {
+	st, ok := parseProcStat(string(d))
+	if !ok {
 		return ""
 	}
 
 	// 进程状态映射
-	st := map[string]string{
+	state := map[string]string{
 		"R": "运行中", "S": "休眠", "D": "不可中断",
 		"Z": "僵尸", "T": "已停止",
-	}[f[2]]
-	if st == "" {
-		st = f[2]
+	}[st.State]
+	if state == "" {
+		state = st.State
 	}
 
-	ut, _ := strconv.Atoi(f[13])  // 用户态 CPU 时间
-	sti, _ := strconv.Atoi(f[14]) // 内核态 CPU 时间
-	rss, _ := strconv.Atoi(f[23]) // RSS 页数
-	nice, _ := strconv.Atoi(f[18])
-	thr, _ := strconv.Atoi(f[19]) // 线程数
+	// CPU 使用率：间隔采样求差，得到瞬时占用率（而非开机以来的平均值）。
+	cpuText := "N/A"
+	time.Sleep(cpuSampleInterval)
+	if d2, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+		if st2, ok := parseProcStat(string(d2)); ok {
+			delta := float64((st2.UTime+st2.STime)-(st.UTime+st.STime)) / linuxClockTicks
+			if delta >= 0 {
+				cpuText = fmt.Sprintf("%.2f%%", delta/cpuSampleInterval.Seconds()*100)
+			}
+		}
+	}
+
 	pageSize := os.Getpagesize()
-	rssM := float64(rss) * float64(pageSize) / 1024 / 1024 // RSS 转 MB
-
-	// CPU 使用率 = (ut+sti) / uptime 秒
-	ud, _ := os.ReadFile("/proc/uptime")
-	us := 0.0
-	fmt.Sscanf(string(ud), "%f", &us)
-	cpuP := 0.0
-	if us > 0 {
-		cpuP = float64(ut+sti) / 100 / us * 100
-	}
+	rssM := float64(st.RSSPages) * float64(pageSize) / 1024 / 1024 // RSS 转 MB
 
 	// 内存占比
 	mt := uint64(0)
@@ -151,11 +202,11 @@ func readProcessLinux(pid int) string {
 	}
 	mp := 0.0
 	if mt > 0 {
-		mp = float64(rss) * float64(pageSize) / 1024 / float64(mt) * 100
+		mp = float64(st.RSSPages) * float64(pageSize) / 1024 / float64(mt) * 100
 	}
 
-	return fmt.Sprintf("状态: %s | CPU: %.2f%% | 内存: %.1f MB (%.2f%%) | 优先级: %d | 线程: %d",
-		st, cpuP, rssM, mp, nice, thr)
+	return fmt.Sprintf("状态: %s | CPU: %s | 内存: %.1f MB (%.2f%%) | 优先级: %d | 线程: %d",
+		state, cpuText, rssM, mp, st.Nice, st.Threads)
 }
 
 // readCmdlineLinux 读取 Linux 进程命令行（/proc）
@@ -168,30 +219,54 @@ func readCmdlineLinux(pid int) string {
 // Linux 系统信息（/proc）
 // ============================================================
 
-// getCPULinux 从 /proc/stat 读取 CPU 使用率
+// getCPULinux 从 /proc/stat 读取 CPU 占用率。
+// 单次读取得到的是"开机以来平均值"，因此间隔采样两次求差，得到瞬时占用率。
 func getCPULinux() string {
-	d, _ := os.ReadFile("/proc/stat")
-	for _, line := range strings.Split(string(d), "\n") {
+	t1, i1, ok := readProcStatCPU()
+	if !ok {
+		return "N/A"
+	}
+	time.Sleep(cpuSampleInterval)
+	t2, i2, ok := readProcStatCPU()
+	if !ok {
+		return "N/A"
+	}
+	dt, di := t2-t1, i2-i1
+	if dt <= 0 {
+		return "N/A"
+	}
+	return fmt.Sprintf("%.1f%%", float64(dt-di)/float64(dt)*100)
+}
+
+func readProcStatCPU() (int, int, bool) {
+	d, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0, 0, false
+	}
+	return parseCPUStat(string(d))
+}
+
+// parseCPUStat 解析 /proc/stat 的 "cpu " 汇总行，返回 (total, idle)。
+// 字段顺序：user nice system idle iowait irq softirq steal ...
+func parseCPUStat(content string) (int, int, bool) {
+	for _, line := range strings.Split(content, "\n") {
 		if !strings.HasPrefix(line, "cpu ") {
 			continue
 		}
 		f := strings.Fields(line)
 		if len(f) < 5 {
-			break
+			return 0, 0, false
 		}
-		t, id := 0, 0
+		total, idle := 0, 0
 		for i, v := range f[1:] {
-			n, _ := strconv.Atoi(v)
-			t += n
+			total += atoi(v)
 			if i == 3 {
-				id = n
+				idle = atoi(v)
 			}
 		}
-		if t > 0 {
-			return fmt.Sprintf("%.1f%%", float64(t-id)/float64(t)*100)
-		}
+		return total, idle, total > 0
 	}
-	return "N/A"
+	return 0, 0, false
 }
 
 // getMemLinux 从 /proc/meminfo 读取内存使用率

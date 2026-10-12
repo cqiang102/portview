@@ -6,8 +6,10 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
 // powershellOut 非 Windows 平台不存在 powershell，仅为保持包可编译而提供占位实现。
@@ -25,4 +27,13 @@ func execCmdWindows(name string, args ...string) (string, error) {
 // runCmdWindows 在非 Windows 平台上就是普通 exec（无需隐藏窗口）
 func runCmdWindows(name string, args ...string) error {
 	return exec.Command(name, args...).Run()
+}
+
+// sendSignal 向进程发送 POSIX 信号；信号 0 用于存在性/权限探测。
+func sendSignal(pid int, sig syscall.Signal) error {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return p.Signal(sig)
 }

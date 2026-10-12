@@ -198,6 +198,9 @@ func (s *PortMetaStore) Get(port int) PortMeta {
 	defer s.mu.RUnlock()
 	return s.data.PortNotes[port]
 }
+
+// Set 仅更新内存中的备注，不落盘，只供测试与内存态初始化使用。
+// 业务写入请走 SaveNote/SaveGroup/update，以保证"落盘成功才提交内存"。
 func (s *PortMetaStore) Set(port int, m PortMeta) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

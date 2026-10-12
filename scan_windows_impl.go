@@ -181,6 +181,25 @@ func killProcessWindows(pid int) error {
 	return runCmdWindows("taskkill", "/F", "/PID", strconv.Itoa(pid))
 }
 
+// windowsDir 返回 Windows 路径的所在目录。
+// 该逻辑只在 Windows 分支使用，但显式处理两种分隔符后，任何平台都会得到相同结果（便于测试）。
+func windowsDir(path string) string {
+	if i := strings.LastIndexAny(path, `\/`); i > 0 {
+		return path[:i]
+	}
+	return path
+}
+
+// revealTargetForWindows 计算 explorer 的打开目标。
+// explorer 用逗号分隔 /select 与路径，路径本身含逗号时无法正确解析，
+// 此时退化为打开所在目录，避免定位到错误位置。
+func revealTargetForWindows(path string) (target string, selectFile bool) {
+	if strings.Contains(path, ",") {
+		return windowsDir(path), false
+	}
+	return path, true
+}
+
 // openFileWindows 在 Windows 上打开文件所在位置并选中该文件。
 // 直接调用 explorer（GUI 应用），无需 cmd 封装，不会弹出控制台窗口。
 func openFileWindows(path string) error {
@@ -188,8 +207,12 @@ func openFileWindows(path string) error {
 	if err != nil {
 		abs = path
 	}
+	target, selectFile := revealTargetForWindows(abs)
+	if !selectFile {
+		return exec.Command("explorer", target).Start()
+	}
 	// explorer /select,path — explorer 是 GUI 进程，不会弹出控制台
-	return exec.Command("explorer", "/select,"+abs).Start()
+	return exec.Command("explorer", "/select,"+target).Start()
 }
 
 // readProcessWindows 通过 tasklist 获取 Windows 进程详情

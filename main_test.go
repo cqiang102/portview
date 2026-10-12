@@ -536,7 +536,8 @@ tcp    LISTEN  0      128    127.0.0.1:99999           0.0.0.0:*`
 	if e0.Port != 8080 || e0.Protocol != "tcp" || e0.Status != "LISTEN" || e0.PID != 1234 || e0.ProcessName != "nginx" {
 		t.Errorf("TCP 解析错误: %+v", e0)
 	}
-	if e1.Port != 22 || e1.Protocol != "tcp" || e1.PID != 567 || e1.ProcessName != "sshd" {
+	// IPv6 本地地址应标记为 tcp6，与 macOS 实现口径一致
+	if e1.Port != 22 || e1.Protocol != "tcp6" || e1.PID != 567 || e1.ProcessName != "sshd" {
 		t.Errorf("TCP6 解析错误: %+v", e1)
 	}
 	if e2.Port != 5353 || e2.Protocol != "udp" || e2.Status != "UNCONN" || e2.PID != 0 {

@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -46,4 +47,9 @@ func runCmdWindows(name string, args ...string) error {
 	cmd.WaitDelay = time.Second
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	return cmd.Run()
+}
+
+// sendSignal 在 Windows 上不支持 POSIX 信号；终止进程走 killProcessWindows（taskkill /F）。
+func sendSignal(pid int, sig syscall.Signal) error {
+	return fmt.Errorf("Windows 不支持 POSIX 信号(sig=%d, pid=%d)", int(sig), pid)
 }

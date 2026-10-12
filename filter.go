@@ -11,12 +11,18 @@ import (
 
 func filterEntries(entries []PortEntry, groups []CustomGroup, sel, query string) []PortEntry {
 	q := strings.ToLower(strings.TrimSpace(query))
-	// 判断是否选中了自定义分组
+	// 判断是否选中了自定义分组（选项文本由 customGroupLabel 统一构造）。
+	// 即使分组已被删除（下拉框尚未重建），也按"自定义分组"处理，避免静默显示全部端口。
 	var customTarget *CustomGroup
-	for _, g := range groups {
-		if "🔖 "+g.Name == sel {
-			customTarget = &g
-			break
+	customSel := false
+	if name, ok := customGroupName(sel); ok {
+		customSel = true
+		for i := range groups {
+			if groups[i].Name == name {
+				g := groups[i]
+				customTarget = &g
+				break
+			}
 		}
 	}
 
@@ -63,9 +69,8 @@ func filterEntries(entries []PortEntry, groups []CustomGroup, sel, query string)
 				if e.Port < 49152 {
 					continue
 				}
-			case customTarget != nil:
-				found := targets[e.Port]
-				if !found {
+			case customSel:
+				if !targets[e.Port] {
 					continue
 				}
 			}

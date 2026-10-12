@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -190,19 +191,33 @@ func readCmdlineDarwin(pid int) string {
 // macOS 系统信息
 // ============================================================
 
-// getCPUDarwin 通过 top 读取 CPU 使用率
+// getCPUDarwin 通过 top 读取 CPU 使用率。
+// `top -l 1` 的第一次采样是"开机以来平均值"，因此取两次采样的最后一次，得到瞬时占用率。
 func getCPUDarwin() string {
-	out, err := commandOutput("top", "-l", "1", "-n", "0")
+	out, err := commandOutput("top", "-l", "2", "-n", "0")
 	if err != nil {
 		return "N/A"
 	}
-	re := regexp.MustCompile(`CPU usage:\s*([\d.]+)%\s*user,\s*([\d.]+)%\s*sys`)
-	if m := re.FindStringSubmatch(string(out)); len(m) == 3 {
-		user := atof(m[1])
-		sys := atof(m[2])
-		return fmt.Sprintf("%.1f%%", user+sys)
+	if pct, ok := parseTopCPU(string(out)); ok {
+		return fmt.Sprintf("%.1f%%", pct)
 	}
 	return "N/A"
+}
+
+var cpuUsageRe = regexp.MustCompile(`CPU usage:\s*([\d.]+)%\s*user,\s*([\d.]+)%\s*sys`)
+
+// parseTopCPU 从 top 输出中取最后一次 CPU 采样（user+sys）。首次采样是开机以来平均值，
+// 必须取最后一条才能得到瞬时占用率。
+func parseTopCPU(raw string) (float64, bool) {
+	samples := cpuUsageRe.FindAllStringSubmatch(raw, -1)
+	if len(samples) == 0 {
+		return 0, false
+	}
+	m := samples[len(samples)-1]
+	if len(m) != 3 {
+		return 0, false
+	}
+	return atof(m[1]) + atof(m[2]), true
 }
 
 // getMemDarwin macOS 版内存信息，通过 sysctl + vm_stat 获取
@@ -220,7 +235,16 @@ func getMemDarwin() string {
 	if err != nil {
 		return "N/A"
 	}
-	vmText := string(vmOut)
+	// 页大小由系统决定：Apple Silicon 为 16KB，Intel Mac 为 4KB，不能写死。
+	return formatMemDarwin(string(vmOut), totalBytes, float64(os.Getpagesize()))
+}
+
+// formatMemDarwin 依据 vm_stat 的页统计与系统页大小格式化内存占用。
+// pageSize 作为参数传入，便于测试 Intel Mac(4096) 与 Apple Silicon(16384) 两种页大小。
+func formatMemDarwin(vmText string, totalBytes, pageSize float64) string {
+	if totalBytes <= 0 || pageSize <= 0 {
+		return "N/A"
+	}
 	getPages := func(key string) float64 {
 		re := regexp.MustCompile(key + `:\s+(\d+)`)
 		if m := re.FindStringSubmatch(vmText); len(m) == 2 {
@@ -228,19 +252,12 @@ func getMemDarwin() string {
 		}
 		return 0
 	}
-	pageSize := 16384.0 // macOS ARM 默认页大小 16KB
-	freePages := getPages("Pages free")
-	activePages := getPages("Pages active")
-	inactivePages := getPages("Pages inactive")
-	wiredPages := getPages("Pages wired down")
-	usedPages := activePages + wiredPages + (inactivePages * 0.5)
-
+	usedPages := getPages("Pages active") + getPages("Pages wired down") + getPages("Pages inactive")*0.5
 	usedBytes := usedPages * pageSize
+
 	totalGB := totalBytes / 1024 / 1024 / 1024
 	usedGB := usedBytes / 1024 / 1024 / 1024
 	pct := usedBytes / totalBytes * 100
-
-	_ = freePages
 
 	return fmt.Sprintf("%.1f%% (%.1f/%.0f GB)", pct, usedGB, totalGB)
 }

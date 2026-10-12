@@ -5,7 +5,6 @@ package main
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -42,32 +41,19 @@ func (pv *PortViewer) buildUI() {
 				return
 			}
 			e := pv.filtered[row]
-			occ := e.PID > 0 // 是否可读取进程信息
 			switch tci.Col {
 			case 0:
 				label.SetText(fmtPort(e.Port))
 			case 1:
 				label.SetText(e.Protocol)
 			case 2:
-				if occ {
-					label.SetText(strconv.Itoa(e.PID))
-				} else {
-					label.SetText("-")
-				}
+				label.SetText(e.PIDText())
 			case 3:
-				if occ {
-					label.SetText(e.ProcessName)
-				} else {
-					label.SetText("-")
-				}
+				label.SetText(e.ProcessText())
 			case 4:
 				label.SetText(e.Status)
 			case 5:
-				if occ {
-					label.SetText(fmt.Sprintf("%.1f MB", e.MemoryMB))
-				} else {
-					label.SetText("-")
-				}
+				label.SetText(e.MemoryText())
 			case 6:
 				// 优先显示自定义分组，否则使用系统分组
 				g := e.SysGroup()
@@ -89,7 +75,7 @@ func (pv *PortViewer) buildUI() {
 	// 设置列宽
 	pv.table.SetColumnWidth(0, 100) // 端口
 	pv.table.SetColumnWidth(1, 50)  // 协议
-	pv.table.SetColumnWidth(2, 60)  // PID
+	pv.table.SetColumnWidth(2, 72)  // PID（"未知"提示需要更宽）
 	pv.table.SetColumnWidth(3, 150) // 进程名
 	pv.table.SetColumnWidth(4, 65)  // 状态
 	pv.table.SetColumnWidth(5, 80)  // 内存

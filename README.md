@@ -92,6 +92,11 @@ Apache 2.0 © lacia.cq@qq.com
 
 - “未观测到占用”表示本次系统查询未返回该端口，不能保证端口可绑定；查询结果受权限和采样时刻影响。
 - 同一端口可有多条 socket 记录；状态栏按端口号去重统计占用数。
+- 已观测到占用但读不到 PID（权限不足，或 TIME-WAIT 等内核持有的无主 socket）时，PID 列显示“未知”、进程名列显示“进程未知”，不会与未观测到占用的端口混淆。
+- CPU 使用率是间隔两次采样得到的瞬时占用率（系统信息与进程详情口径一致），不是开机以来的平均值。
+- 终止进程：Windows 使用 `taskkill /F`；Linux/macOS 先发送 SIGTERM，3 秒宽限期后仍存活才升级为 SIGKILL。
+- “位置”：macOS 用 `open -R`、Windows 用 `explorer /select` 定位并选中可执行文件（Windows 路径含逗号时退化为打开所在目录），Linux 打开所在目录。
+- Linux 与 macOS 的协议列均区分 IPv6（`tcp6`/`udp6`）；内存占用按系统实际页大小计算（Apple Silicon 16KB、Intel Mac 4KB）。
 - 分组支持多选，备注窗口与分组管理共用同一份端口归属数据。
 - 已有的 `~/.portview/notes.json` 会继续使用；新安装使用系统用户配置目录下的 `PortView/notes.json`（macOS 为 `~/Library/Application Support/PortView/notes.json`，Windows 为 `%AppData%/PortView/notes.json`，Linux 为 `$XDG_CONFIG_HOME/PortView/notes.json`，默认 `~/.config/PortView/notes.json`）。旧版 JSON 备注格式会自动迁移。
 
@@ -102,6 +107,7 @@ Apache 2.0 © lacia.cq@qq.com
 - `ui.go`：主界面构建；`groups_ui.go`、`notes_ui.go`、`process_ui.go`：分组、备注和进程交互。
 - `filter.go`、`model.go`：独立于 GUI 的筛选、排序与端口模型。
 - `scan*.go`、`pwsh*.go`：平台采集和命令执行；`store.go`：配置迁移与事务式保存。
+- `main_test.go`、`regressions_test.go`、`fixes_test.go`：解析、存储、回归与修复验证。
 
 ```bash
 go test -race -cover ./...

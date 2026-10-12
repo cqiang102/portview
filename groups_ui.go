@@ -30,7 +30,7 @@ func buildGroupOptions(pv *PortViewer) []string {
 	out := []string{"🏷️ 全部", "📌 已占用", "🅰 TCP", "🅱 UDP",
 		"⚙️ 系统(占用)", "🌐 Web", "💾 数据库", "🔐 SSH", "🔁 动态"}
 	for _, g := range pv.meta.Groups() {
-		out = append(out, "🔖 "+g.Name)
+		out = append(out, customGroupLabel(g.Name))
 	}
 	return out
 }
@@ -65,7 +65,7 @@ func (pv *PortViewer) manageGroups() {
 	for _, g := range pv.meta.Groups() {
 
 		row := container.NewHBox(
-			widget.NewLabel(fmt.Sprintf("🔖 %s (%d)", g.Name, len(g.Ports))),
+			widget.NewLabel(fmt.Sprintf("%s (%d)", customGroupLabel(g.Name), len(g.Ports))),
 			layout.NewSpacer(),
 			widget.NewButton("编辑", func() { pv.editGroup(g) }),
 			widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {

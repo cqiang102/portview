@@ -6,11 +6,14 @@ package main
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -120,7 +123,16 @@ func execCmd(name string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// killProcess 终止指定进程：Windows 用 taskkill，Linux/macOS 用 kill -9
+const (
+	// killGracePeriod 是发出 SIGTERM 后等待进程自行退出的宽限期。
+	killGracePeriod = 3 * time.Second
+	// killPollInterval 是宽限期内检查进程是否仍存活的间隔。
+	killPollInterval = 100 * time.Millisecond
+)
+
+// killProcess 终止指定进程。
+// Windows 使用 taskkill /F；Linux/macOS 先发 SIGTERM 让进程自行清理并退出，
+// 宽限期结束后仍存活时再升级为 SIGKILL，避免一律强杀导致状态残留。
 func killProcess(pid int) error {
 	if pid <= 0 {
 		return fmt.Errorf("无效 PID: %d", pid)
@@ -128,7 +140,42 @@ func killProcess(pid int) error {
 	if runtime.GOOS == "windows" {
 		return killProcessWindows(pid)
 	}
-	return exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
+	return gracefulKill(pid, sendSignal, time.Sleep)
+}
+
+// gracefulKill 实现"先 TERM 后 KILL"的两阶段终止流程。
+// send/sleep 以参数注入，便于在不真正操作进程的情况下测试流程。
+// 进程本就不存在时视为目标已达成，不报错。
+func gracefulKill(pid int, send func(pid int, sig syscall.Signal) error, sleep func(time.Duration)) error {
+	if err := send(pid, syscall.SIGTERM); err != nil {
+		if processGone(err) {
+			return nil
+		}
+		return err
+	}
+	for waited := time.Duration(0); waited < killGracePeriod; waited += killPollInterval {
+		sleep(killPollInterval)
+		if !processAlive(pid, send) {
+			return nil
+		}
+	}
+	if err := send(pid, syscall.SIGKILL); err != nil && !processGone(err) {
+		return err
+	}
+	return nil
+}
+
+// processGone 判断错误是否表示"目标进程已不存在"。
+// os.Process.Signal 会把内核的 ESRCH 归一化为 os.ErrProcessDone，两者都要识别。
+func processGone(err error) bool {
+	return err != nil && (errors.Is(err, syscall.ESRCH) || errors.Is(err, os.ErrProcessDone))
+}
+
+// processAlive 通过信号 0 判断进程是否仍存在。
+// EPERM 表示进程存在但不属于当前用户，仍应视为存活。
+func processAlive(pid int, send func(pid int, sig syscall.Signal) error) bool {
+	err := send(pid, syscall.Signal(0))
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func commandOutput(name string, args ...string) ([]byte, error) {
